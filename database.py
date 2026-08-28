@@ -1,302 +1,1088 @@
 import os
-import psycopg2
 from contextlib import contextmanager
+from decimal import Decimal, InvalidOperation
+
+import psycopg2
+from psycopg2 import pool
+from psycopg2.errors import UniqueViolation
 from dotenv import load_dotenv
 
-# Carga variables de entorno (.env)
+
 load_dotenv()
 
 
-class DatabaseManager:
-    def __init__(self, host=None, port=None, database=None, user=None, password=None):
-        self.db_config = {
-            "host": host or os.getenv("DB_HOST", "localhost"),
-            "database": database or os.getenv("DB_NAME", "postgres"),
-            "user": user or os.getenv("DB_USER", "postgres"),
-            "password": password or os.getenv("DB_PASSWORD", ""),
-            "port": port or os.getenv("DB_PORT", "5432"),
-            "sslmode": "require",
-            "connect_timeout": 10
+METODOS_PAGO_VALIDOS = (
+    "Efectivo",
+    "POS / Tarjeta",
+    "Transferencia",
+)
+
+TIPOS_ENTREGA_VALIDOS = (
+    "Mostrador",
+    "Delivery",
+    "Retiro",
+)
+
+
+class CajaNoAbiertaError(RuntimeError):
+    """Se intenta operar sin una sesión de caja abierta."""
+
+
+class CajaYaAbiertaError(RuntimeError):
+    """Se intenta abrir una segunda sesión de caja."""
+
+
+class VentaNoModificableError(RuntimeError):
+    """La venta no existe o ya no puede modificarse."""
+
+
+class DBManager:
+    """
+    Acceso PostgreSQL/Supabase para Campo Burger.
+
+    Usa ThreadedConnectionPool para reutilizar conexiones entre consultas
+    y permitir operaciones desde hilos de trabajo sin congelar Tkinter.
+    """
+
+    TABLAS_REQUERIDAS = {
+        "productos": {
+            "id",
+            "nombre",
+            "precio",
+            "categoria",
+            "subcategoria",
+            "descripcion",
+        },
+        "sesiones_caja": {
+            "id",
+            "fecha_apertura",
+            "fecha_cierre",
+            "monto_inicial",
+            "estado",
+        },
+        "ventas": {
+            "id",
+            "sesion_id",
+            "fecha_hora",
+            "monto_total",
+            "metodo_pago",
+            "estado",
+            "tipo_entrega",
+            "recargo_delivery",
+        },
+        "detalle_ventas": {
+            "id",
+            "venta_id",
+            "producto_nombre",
+            "cantidad",
+            "precio_unitario",
+            "subtotal",
+            "notas",
+            "es_extra",
+            "parent_detalle_id",
+        },
+    }
+
+    def __init__(self):
+        self._validar_configuracion()
+        self._pool_cerrado = False
+        self._pool = self._crear_pool()
+
+    # ==================================================================
+    # 1. CONEXIÓN / POOL
+    # ==================================================================
+
+    def _validar_configuracion(self):
+        requeridas = ("DB_HOST", "DB_USER", "DB_PASSWORD")
+        faltantes = [nombre for nombre in requeridas if not os.getenv(nombre)]
+        if faltantes:
+            raise RuntimeError(
+                "Faltan variables obligatorias en .env: " + ", ".join(faltantes)
+            )
+
+    def _connection_kwargs(self):
+        return {
+            "host": os.getenv("DB_HOST"),
+            "port": os.getenv("DB_PORT", "5432"),
+            "database": os.getenv("DB_NAME", "postgres"),
+            "user": os.getenv("DB_USER"),
+            "password": os.getenv("DB_PASSWORD"),
+            "sslmode": os.getenv("DB_SSLMODE", "require"),
+            "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "10")),
+            "application_name": "campo_burger_pos",
         }
-        self.init_db()
+
+    def _crear_pool(self):
+        minconn = max(1, int(os.getenv("DB_POOL_MIN", "1")))
+        maxconn = max(minconn, int(os.getenv("DB_POOL_MAX", "5")))
+        return pool.ThreadedConnectionPool(
+            minconn,
+            maxconn,
+            **self._connection_kwargs(),
+        )
+
+    def get_connection(self):
+        """
+        Crea una conexión independiente.
+
+        Normalmente la aplicación debe usar los métodos de DBManager, que
+        trabajan con el pool. Se conserva por compatibilidad/diagnóstico.
+        """
+        return psycopg2.connect(**self._connection_kwargs())
 
     @contextmanager
-    def obtener_conexion(self):
-        """Maneja conexiones independientes a la base de datos."""
-        conn = psycopg2.connect(**self.db_config)
+    def _connection(self):
+        if self._pool_cerrado:
+            raise RuntimeError("El pool de conexiones ya fue cerrado.")
+
+        conn = self._pool.getconn()
+        cerrar_al_devolver = False
+
         try:
+            if conn.closed:
+                cerrar_al_devolver = True
+                raise psycopg2.InterfaceError("La conexión del pool está cerrada.")
+
+            # Se aplica dentro de la misma transacción que usará la consulta.
+            # Esto es compatible tanto con conexiones directas como con poolers.
+            timezone = os.getenv("DB_TIMEZONE", "America/Asuncion")
+            with conn.cursor() as cur:
+                cur.execute("SET TIME ZONE %s;", (timezone,))
+
             yield conn
+            conn.commit()
+
+        except Exception:
+            try:
+                if not conn.closed:
+                    conn.rollback()
+            except Exception:
+                cerrar_al_devolver = True
+            raise
+
         finally:
-            conn.close()
+            try:
+                self._pool.putconn(conn, close=cerrar_al_devolver or bool(conn.closed))
+            except Exception:
+                pass
+
+    def probar_conexion(self):
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        current_database(),
+                        current_user,
+                        current_setting('TimeZone');
+                    """
+                )
+                database, usuario, timezone = cur.fetchone()
+
+        return {
+            "database": database,
+            "usuario": usuario,
+            "timezone": timezone,
+        }
 
     def init_db(self):
-        """Crea las tablas en PostgreSQL / Supabase si no existen."""
+        """Valida la estructura; la propia consulta confirma la conexión."""
+        self.verificar_estructura()
+        return True
+
+    def close(self):
+        if not self._pool_cerrado:
+            self._pool.closeall()
+            self._pool_cerrado = True
+
+    # ==================================================================
+    # 2. ESTRUCTURA
+    # ==================================================================
+
+    def verificar_estructura(self):
+        nombres_tablas = tuple(self.TABLAS_REQUERIDAS.keys())
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT table_name, column_name
+                    FROM information_schema.columns
+                    WHERE table_schema = 'public'
+                      AND table_name IN %s
+                    ORDER BY table_name, ordinal_position;
+                    """,
+                    (nombres_tablas,),
+                )
+
+                encontradas = {}
+                for tabla, columna in cur.fetchall():
+                    encontradas.setdefault(tabla, set()).add(columna)
+
+        errores = []
+        for tabla, requeridas in self.TABLAS_REQUERIDAS.items():
+            if tabla not in encontradas:
+                errores.append(f"Falta la tabla public.{tabla}")
+                continue
+
+            faltantes = sorted(requeridas - encontradas[tabla])
+            if faltantes:
+                errores.append(
+                    f"En public.{tabla} faltan columnas: " + ", ".join(faltantes)
+                )
+
+        if errores:
+            raise RuntimeError(
+                "La estructura de PostgreSQL no coincide con la esperada:\n- "
+                + "\n- ".join(errores)
+            )
+
+        return True
+
+    def crear_tablas_si_no_existen(self):
+        """Compatibilidad con versiones anteriores; no altera el esquema."""
+        return self.verificar_estructura()
+
+    # ==================================================================
+    # 3. VALIDACIONES
+    # ==================================================================
+
+    @staticmethod
+    def _decimal(valor, nombre="monto"):
         try:
-            with self.obtener_conexion() as conn:
-                with conn.cursor() as cursor:
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS productos (
-                            id SERIAL PRIMARY KEY,
-                            nombre VARCHAR(100) UNIQUE NOT NULL,
-                            precio NUMERIC(12, 2) NOT NULL,
-                            categoria VARCHAR(50) NOT NULL,
-                            subcategoria VARCHAR(50) NOT NULL,
-                            descripcion TEXT
-                        );
-                    ''')
+            resultado = Decimal(str(valor))
+        except (InvalidOperation, TypeError, ValueError) as exc:
+            raise ValueError(f"{nombre} no es un número válido.") from exc
 
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS sesiones_caja (
-                            id SERIAL PRIMARY KEY,
-                            monto_inicial NUMERIC(12, 2) NOT NULL,
-                            monto_final NUMERIC(12, 2) DEFAULT 0,
-                            fecha_apertura TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                            fecha_cierre TIMESTAMP,
-                            estado VARCHAR(20) DEFAULT 'ABIERTA'
-                        );
-                    ''')
+        if not resultado.is_finite():
+            raise ValueError(f"{nombre} no es un número válido.")
+        return resultado
 
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS ventas (
-                            id SERIAL PRIMARY KEY,
-                            sesion_id INT REFERENCES sesiones_caja(id) ON DELETE CASCADE,
-                            monto_total NUMERIC(12, 2) NOT NULL,
-                            metodo_pago VARCHAR(50) NOT NULL,
-                            fecha TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                        );
-                    ''')
+    @classmethod
+    def _decimal_no_negativo(cls, valor, nombre="monto"):
+        resultado = cls._decimal(valor, nombre)
+        if resultado < 0:
+            raise ValueError(f"{nombre} no puede ser negativo.")
+        return resultado
 
-                    cursor.execute('''
-                        CREATE TABLE IF NOT EXISTS detalle_ventas (
-                            id SERIAL PRIMARY KEY,
-                            venta_id INT REFERENCES ventas(id) ON DELETE CASCADE,
-                            producto_nombre VARCHAR(100) NOT NULL,
-                            cantidad INT NOT NULL,
-                            precio_unitario NUMERIC(12, 2) NOT NULL,
-                            subtotal NUMERIC(12, 2) NOT NULL,
-                            notas TEXT
-                        );
-                    ''')
-                    conn.commit()
-        except Exception as e:
-            print(f"Notificación init_db: {e}")
+    @staticmethod
+    def _validar_metodo_pago(metodo_pago):
+        metodo = str(metodo_pago or "").strip()
+        if metodo not in METODOS_PAGO_VALIDOS:
+            raise ValueError(
+                "Método de pago inválido. Use: " + ", ".join(METODOS_PAGO_VALIDOS)
+            )
+        return metodo
 
-    # ==========================================
-    # GESTIÓN DE PRODUCTOS Y MENÚ
-    # ==========================================
+    @staticmethod
+    def _validar_tipo_entrega(tipo_entrega):
+        tipo = str(tipo_entrega or "").strip()
+        if tipo not in TIPOS_ENTREGA_VALIDOS:
+            raise ValueError(
+                "Tipo de entrega inválido. Use: " + ", ".join(TIPOS_ENTREGA_VALIDOS)
+            )
+        return tipo
+
+    # ==================================================================
+    # 4. SESIONES DE CAJA
+    # ==================================================================
+
+    def obtener_sesion_abierta(self):
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, fecha_apertura, fecha_cierre, monto_inicial, estado
+                    FROM sesiones_caja
+                    WHERE estado = 'ABIERTA'
+                    ORDER BY fecha_apertura DESC, id DESC
+                    LIMIT 1;
+                    """
+                )
+                fila = cur.fetchone()
+
+        if not fila:
+            return None
+
+        return {
+            "id": fila[0],
+            "fecha_apertura": fila[1],
+            "fecha_cierre": fila[2],
+            "monto_inicial": fila[3],
+            "estado": fila[4],
+        }
+
+    def abrir_caja(self, monto_inicial=0):
+        monto = self._decimal_no_negativo(monto_inicial, "monto inicial")
+
+        try:
+            with self._connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT id
+                        FROM sesiones_caja
+                        WHERE estado = 'ABIERTA'
+                        LIMIT 1
+                        FOR UPDATE;
+                        """
+                    )
+                    existente = cur.fetchone()
+
+                    if existente:
+                        raise CajaYaAbiertaError(
+                            f"Ya existe una caja abierta: sesión #{existente[0]}."
+                        )
+
+                    cur.execute(
+                        """
+                        INSERT INTO sesiones_caja
+                            (fecha_apertura, fecha_cierre, monto_inicial, estado)
+                        VALUES (NOW(), NULL, %s, 'ABIERTA')
+                        RETURNING id;
+                        """,
+                        (monto,),
+                    )
+                    sesion_id = cur.fetchone()[0]
+
+            return sesion_id
+
+        except UniqueViolation as exc:
+            raise CajaYaAbiertaError("Ya existe una sesión de caja abierta.") from exc
+
+    def cerrar_caja(self):
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM sesiones_caja
+                    WHERE estado = 'ABIERTA'
+                    ORDER BY fecha_apertura DESC, id DESC
+                    LIMIT 1
+                    FOR UPDATE;
+                    """
+                )
+                fila = cur.fetchone()
+
+                if not fila:
+                    raise CajaNoAbiertaError("No existe una sesión de caja abierta.")
+
+                sesion_id = fila[0]
+
+                cur.execute(
+                    """
+                    UPDATE sesiones_caja
+                    SET estado = 'CERRADA', fecha_cierre = NOW()
+                    WHERE id = %s AND estado = 'ABIERTA';
+                    """,
+                    (sesion_id,),
+                )
+
+        return sesion_id
+
+    # ==================================================================
+    # 5. PRODUCTOS
+    # ==================================================================
 
     def obtener_categorias_principales(self):
-        """Devuelve las categorías priorizando el orden personalizado del menú."""
-        orden_prioritario = [
-            "Hamburguesas",
-            "Lomitos y Sándwiches",
-            "Helados y Postres",
-            "Agregados",
-        ]
-
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute(
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
                     """
-                    SELECT DISTINCT categoria 
-                    FROM productos 
-                    WHERE categoria IS NOT NULL AND TRIM(categoria) != '';
-                """
+                    SELECT DISTINCT categoria
+                    FROM productos
+                    WHERE categoria IS NOT NULL
+                      AND TRIM(categoria) <> ''
+                    ORDER BY categoria;
+                    """
                 )
-                categorias = [r[0] for r in cursor.fetchall()]
+                return [fila[0] for fila in cur.fetchall()]
 
-        # Ordena según la lista prioritaria (y al final cualquier otra que exista)
-        categorias.sort(
-            key=lambda cat: (
-                orden_prioritario.index(cat)
-                if cat in orden_prioritario
-                else len(orden_prioritario)
-            )
-        )
-        return categorias
+    def obtener_subcategorias_por_categoria(self, categoria):
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT DISTINCT subcategoria
+                    FROM productos
+                    WHERE UPPER(categoria) = UPPER(%s)
+                      AND subcategoria IS NOT NULL
+                      AND TRIM(subcategoria) <> ''
+                    ORDER BY subcategoria;
+                    """,
+                    (categoria,),
+                )
+                return [fila[0] for fila in cur.fetchall()]
 
-    def obtener_categorias(self):
-        return self.obtener_categorias_principales()
+    def obtener_productos_filtrados(self, categoria="TODOS", subcategoria="TODOS"):
+        query = """
+            SELECT id, nombre, precio, categoria, subcategoria, descripcion
+            FROM productos
+            WHERE 1 = 1
+        """
+        params = []
 
-    def obtener_productos_filtrados(self, categoria=None, busqueda=None):
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                query = "SELECT id, nombre, precio, categoria, subcategoria FROM productos WHERE 1=1"
-                params = []
+        categoria = str(categoria or "TODOS").strip()
+        subcategoria = str(subcategoria or "TODOS").strip()
 
-                if categoria and str(categoria).strip().upper() != "TODOS":
-                    cat_limpia = str(categoria).strip()
-                    query += " AND (TRIM(LOWER(categoria)) = TRIM(LOWER(%s)) OR TRIM(LOWER(subcategoria)) = TRIM(LOWER(%s)))"
-                    params.extend([cat_limpia, cat_limpia])
+        if categoria.upper() != "TODOS":
+            query += " AND UPPER(categoria) = UPPER(%s)"
+            params.append(categoria)
 
-                if busqueda and str(busqueda).strip():
-                    term = f"%{str(busqueda).strip()}%"
-                    query += " AND (nombre ILIKE %s OR subcategoria ILIKE %s OR categoria ILIKE %s)"
-                    params.extend([term, term, term])
+        if subcategoria.upper() != "TODOS":
+            query += " AND UPPER(subcategoria) = UPPER(%s)"
+            params.append(subcategoria)
 
-                query += " ORDER BY id, categoria, subcategoria, nombre;"
-                cursor.execute(query, params)
-                filas = cursor.fetchall()
+        query += " ORDER BY categoria, subcategoria NULLS LAST, nombre;"
 
-        return [(r[0], r[1], float(r[2]), r[3], r[4]) for r in filas]
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(params))
+                return cur.fetchall()
 
-    # ==========================================
-    # GESTIÓN DE CAJA Y SESIONES
-    # ==========================================
-
-    def obtener_sesion_activa(self):
-        """Devuelve tupla (id, estado, monto_inicial, fecha) según gui.py."""
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id, estado, monto_inicial, fecha_apertura 
-                    FROM sesiones_caja 
-                    WHERE estado = 'ABIERTA' 
-                    ORDER BY id DESC LIMIT 1;
-                """)
-                return cursor.fetchone()
-
-    def abrir_caja(self, monto_inicial):
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO sesiones_caja (monto_inicial, estado, fecha_apertura)
-                    VALUES (%s, 'ABIERTA', CURRENT_TIMESTAMP)
-                    RETURNING id;
-                """, (monto_inicial,))
-                sesion_id = cursor.fetchone()[0]
-                conn.commit()
-                return sesion_id
-
-    def actualizar_monto_inicial(self, sesion_id, nuevo_monto):
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    UPDATE sesiones_caja 
-                    SET monto_inicial = %s 
+    def obtener_producto_por_id(self, producto_id):
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, nombre, precio, categoria, subcategoria, descripcion
+                    FROM productos
                     WHERE id = %s;
-                """, (nuevo_monto, sesion_id))
-                conn.commit()
+                    """,
+                    (producto_id,),
+                )
+                return cur.fetchone()
 
-    def obtener_cierre_caja_activa(self):
-        """Retorna (desglose, total_ventas, cant_ventas, monto_inicial) requeridos por gui.py."""
-        sesion = self.obtener_sesion_activa()
-        if not sesion:
-            return [], 0.0, 0, 0.0
+    def agregar_producto(
+        self, nombre, precio, categoria, subcategoria="", descripcion=""
+    ):
+        nombre = str(nombre or "").strip()
+        categoria = str(categoria or "").strip()
+        subcategoria = str(subcategoria or "").strip()
+        descripcion = str(descripcion or "").strip()
+        precio = self._decimal_no_negativo(precio, "precio")
 
-        sesion_id = sesion[0]
-        monto_inicial = float(sesion[2])
+        if not nombre:
+            raise ValueError("El nombre del producto es obligatorio.")
+        if not categoria:
+            raise ValueError("La categoría es obligatoria.")
 
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT metodo_pago, COALESCE(SUM(monto_total), 0), COUNT(id)
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO productos
+                        (nombre, precio, categoria, subcategoria, descripcion)
+                    VALUES (%s, %s, %s, %s, %s)
+                    RETURNING id;
+                    """,
+                    (nombre, precio, categoria, subcategoria, descripcion),
+                )
+                return cur.fetchone()[0]
+
+    def actualizar_producto(
+        self,
+        producto_id,
+        nombre,
+        precio,
+        categoria,
+        subcategoria="",
+        descripcion="",
+    ):
+        nombre = str(nombre or "").strip()
+        categoria = str(categoria or "").strip()
+        subcategoria = str(subcategoria or "").strip()
+        descripcion = str(descripcion or "").strip()
+        precio = self._decimal_no_negativo(precio, "precio")
+
+        if not nombre:
+            raise ValueError("El nombre del producto es obligatorio.")
+        if not categoria:
+            raise ValueError("La categoría es obligatoria.")
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE productos
+                    SET nombre = %s,
+                        precio = %s,
+                        categoria = %s,
+                        subcategoria = %s,
+                        descripcion = %s
+                    WHERE id = %s;
+                    """,
+                    (
+                        nombre,
+                        precio,
+                        categoria,
+                        subcategoria,
+                        descripcion,
+                        producto_id,
+                    ),
+                )
+                if cur.rowcount != 1:
+                    raise ValueError(f"No existe el producto #{producto_id}.")
+
+    def eliminar_producto(self, producto_id):
+        producto = self.obtener_producto_por_id(producto_id)
+        if not producto:
+            raise ValueError(f"No existe el producto #{producto_id}.")
+
+        nombre = producto[1]
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT EXISTS (
+                        SELECT 1
+                        FROM detalle_ventas
+                        WHERE LOWER(TRIM(producto_nombre)) = LOWER(TRIM(%s))
+                    );
+                    """,
+                    (nombre,),
+                )
+                vendido = cur.fetchone()[0]
+
+                if vendido:
+                    raise ValueError(
+                        "El producto ya posee ventas históricas y no puede eliminarse."
+                    )
+
+                cur.execute("DELETE FROM productos WHERE id = %s;", (producto_id,))
+
+    # ==================================================================
+    # 6. VENTAS
+    # ==================================================================
+
+    def crear_venta(
+        self,
+        total,
+        metodo_pago,
+        items,
+        tipo_entrega="Mostrador",
+        recargo_delivery=0,
+    ):
+        metodo_pago = self._validar_metodo_pago(metodo_pago)
+        tipo_entrega = self._validar_tipo_entrega(tipo_entrega)
+        total = self._decimal_no_negativo(total, "total")
+        recargo = self._decimal_no_negativo(recargo_delivery, "recargo delivery")
+
+        if not items:
+            raise ValueError("La venta debe contener al menos un producto.")
+
+        items_normalizados = []
+        total_items = Decimal("0")
+
+        for posicion, item in enumerate(items, start=1):
+            try:
+                cantidad = int(item["cant"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise ValueError(f"Cantidad inválida en el ítem {posicion}.") from exc
+
+            if cantidad <= 0:
+                raise ValueError(
+                    f"La cantidad del ítem {posicion} debe ser mayor que cero."
+                )
+
+            nombre = str(item.get("nombre") or "").strip()
+            if not nombre:
+                raise ValueError(f"Falta el nombre del producto en el ítem {posicion}.")
+
+            subtotal = self._decimal_no_negativo(
+                item.get("subtotal"), f"subtotal del ítem {posicion}"
+            )
+
+            if item.get("precio_unitario") is not None:
+                precio_unitario = self._decimal_no_negativo(
+                    item["precio_unitario"], f"precio unitario del ítem {posicion}"
+                )
+            else:
+                precio_unitario = subtotal / Decimal(cantidad)
+
+            notas = item.get("obs")
+            if notas is None:
+                notas = item.get("notas")
+            notas = str(notas).strip() if notas else None
+
+            es_extra = bool(item.get("es_extra", False))
+            parent_detalle_id = item.get("parent_detalle_id")
+
+            total_items += subtotal
+            items_normalizados.append(
+                {
+                    "cantidad": cantidad,
+                    "nombre": nombre,
+                    "precio_unitario": precio_unitario,
+                    "subtotal": subtotal,
+                    "notas": notas,
+                    "es_extra": es_extra,
+                    "parent_detalle_id": parent_detalle_id,
+                }
+            )
+
+        esperado = total_items + recargo
+        if total != esperado:
+            raise ValueError(
+                "El total recibido no coincide con los detalles de la venta. "
+                f"Detalles + recargo = {esperado}; total recibido = {total}."
+            )
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id
+                    FROM sesiones_caja
+                    WHERE estado = 'ABIERTA'
+                    ORDER BY fecha_apertura DESC, id DESC
+                    LIMIT 1
+                    FOR UPDATE;
+                    """
+                )
+                fila_sesion = cur.fetchone()
+
+                if not fila_sesion:
+                    raise CajaNoAbiertaError(
+                        "No puede registrar una venta porque no hay una caja abierta."
+                    )
+
+                sesion_id = fila_sesion[0]
+
+                cur.execute(
+                    """
+                    INSERT INTO ventas
+                        (sesion_id, fecha_hora, monto_total, metodo_pago,
+                         estado, tipo_entrega, recargo_delivery)
+                    VALUES (%s, NOW(), %s, %s, 'COMPLETADA', %s, %s)
+                    RETURNING id;
+                    """,
+                    (sesion_id, total, metodo_pago, tipo_entrega, recargo),
+                )
+                venta_id = cur.fetchone()[0]
+
+                for item in items_normalizados:
+                    cur.execute(
+                        """
+                        INSERT INTO detalle_ventas
+                            (venta_id, producto_nombre, cantidad, precio_unitario,
+                             subtotal, notas, es_extra, parent_detalle_id)
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                        """,
+                        (
+                            venta_id,
+                            item["nombre"],
+                            item["cantidad"],
+                            item["precio_unitario"],
+                            item["subtotal"],
+                            item["notas"],
+                            item["es_extra"],
+                            item["parent_detalle_id"],
+                        ),
+                    )
+
+        return venta_id
+
+    def obtener_ventas_sesion_activa(self):
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT s.id
+                    FROM sesiones_caja s
+                    WHERE s.estado = 'ABIERTA'
+                    ORDER BY s.fecha_apertura DESC, s.id DESC
+                    LIMIT 1;
+                    """
+                )
+                fila_sesion = cur.fetchone()
+                if not fila_sesion:
+                    return []
+
+                sesion_id = fila_sesion[0]
+
+                cur.execute(
+                    """
+                    SELECT id, TO_CHAR(fecha_hora, 'HH24:MI'), monto_total, metodo_pago
                     FROM ventas
                     WHERE sesion_id = %s
-                    GROUP BY metodo_pago;
-                """, (sesion_id,))
-                desglose = [(r[0], float(r[1]), r[2]) for r in cursor.fetchall()]
-
-                cursor.execute("""
-                    SELECT COALESCE(SUM(monto_total), 0), COUNT(id)
-                    FROM ventas
-                    WHERE sesion_id = %s;
-                """, (sesion_id,))
-                row = cursor.fetchone()
-                total_ventas = float(row[0]) if row else 0.0
-                cant_ventas = row[1] if row else 0
-
-        return desglose, total_ventas, cant_ventas, monto_inicial
-
-    def procesar_cierre_de_caja(self):
-        sesion = self.obtener_sesion_activa()
-        if not sesion:
-            return
-
-        sesion_id = sesion[0]
-        _, total_ventas, _, monto_inicial = self.obtener_cierre_caja_activa()
-        monto_final = monto_inicial + total_ventas
-
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    UPDATE sesiones_caja 
-                    SET monto_final = %s, fecha_cierre = CURRENT_TIMESTAMP, estado = 'CERRADA'
-                    WHERE id = %s;
-                """, (monto_final, sesion_id))
-                conn.commit()
-
-    # ==========================================
-    # GESTIÓN Y HISTORIAL DE VENTAS
-    # ==========================================
-
-    def registrar_venta(self, sesion_id, total, metodo_pago, carrito):
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    INSERT INTO ventas (sesion_id, monto_total, metodo_pago, fecha)
-                    VALUES (%s, %s, %s, CURRENT_TIMESTAMP)
-                    RETURNING id;
-                """, (sesion_id, total, metodo_pago))
-                venta_id = cursor.fetchone()[0]
-
-                for item in carrito:
-                    subtotal = float(item['precio']) * int(item['cantidad'])
-                    cursor.execute("""
-                        INSERT INTO detalle_ventas (venta_id, producto_nombre, cantidad, precio_unitario, subtotal, notas)
-                        VALUES (%s, %s, %s, %s, %s, %s);
-                    """, (venta_id, item['nombre'], item['cantidad'], item['precio'], subtotal, item.get('notas', '')))
-
-                conn.commit()
-                return venta_id
-
-    def guardar_venta(self, total, metodo_pago, carrito):
-        sesion = self.obtener_sesion_activa()
-        sesion_id = sesion[0] if sesion else None
-        return self.registrar_venta(sesion_id, total, metodo_pago, carrito)
-
-    def obtener_ventas_activas(self):
-        """Retorna ventas del turno con hora formateada: (id, hora, monto, metodo)."""
-        sesion = self.obtener_sesion_activa()
-        if not sesion:
-            return []
-
-        sesion_id = sesion[0]
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT id, TO_CHAR(fecha, 'HH24:MI'), monto_total, metodo_pago 
-                    FROM ventas 
-                    WHERE sesion_id = %s 
+                      AND estado = 'COMPLETADA'
                     ORDER BY id DESC;
-                """, (sesion_id,))
-                return [(r[0], r[1], float(r[2]), r[3]) for r in cursor.fetchall()]
+                    """,
+                    (sesion_id,),
+                )
+                ventas = cur.fetchall()
+
+                if not ventas:
+                    return []
+
+                venta_ids = [fila[0] for fila in ventas]
+                cur.execute(
+                    """
+                    SELECT venta_id, cantidad, producto_nombre, subtotal, notas,
+                           precio_unitario, es_extra, parent_detalle_id
+                    FROM detalle_ventas
+                    WHERE venta_id = ANY(%s)
+                    ORDER BY venta_id, id;
+                    """,
+                    (venta_ids,),
+                )
+
+                detalles_por_venta = {}
+                for fila in cur.fetchall():
+                    detalles_por_venta.setdefault(fila[0], []).append(
+                        {
+                            "cant": fila[1],
+                            "nombre": fila[2],
+                            "subtotal": fila[3],
+                            "obs": fila[4],
+                            "precio_unitario": fila[5],
+                            "es_extra": fila[6],
+                            "parent_detalle_id": fila[7],
+                        }
+                    )
+
+        return [
+            (venta_id, hora, monto, metodo, detalles_por_venta.get(venta_id, []))
+            for venta_id, hora, monto, metodo in ventas
+        ]
 
     def obtener_detalle_venta(self, venta_id):
-        """Retorna ítems del pedido: (nombre, cantidad, precio_unit, subtotal, notas)."""
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    SELECT producto_nombre, cantidad, precio_unitario, subtotal, COALESCE(notas, '') 
-                    FROM detalle_ventas 
-                    WHERE venta_id = %s 
-                    ORDER BY id ASC;
-                """, (venta_id,))
-                return [(r[0], r[1], float(r[2]), float(r[3]), r[4]) for r in cursor.fetchall()]
-
-    def cambiar_metodo_pago(self, id_venta, nuevo_metodo):
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("""
-                    UPDATE ventas 
-                    SET metodo_pago = %s 
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, sesion_id,
+                           TO_CHAR(fecha_hora, 'YYYY-MM-DD HH24:MI:SS'),
+                           monto_total, metodo_pago, estado,
+                           tipo_entrega, recargo_delivery
+                    FROM ventas
                     WHERE id = %s;
-                """, (nuevo_metodo, id_venta))
-                conn.commit()
+                    """,
+                    (venta_id,),
+                )
+                venta = cur.fetchone()
+                if not venta:
+                    return None
 
-    def eliminar_venta(self, id_venta):
-        with self.obtener_conexion() as conn:
-            with conn.cursor() as cursor:
-                cursor.execute("DELETE FROM detalle_ventas WHERE venta_id = %s;", (id_venta,))
-                cursor.execute("DELETE FROM ventas WHERE id = %s;", (id_venta,))
-                conn.commit()
+                cur.execute(
+                    """
+                    SELECT cantidad, producto_nombre, precio_unitario,
+                           subtotal, notas, es_extra, parent_detalle_id
+                    FROM detalle_ventas
+                    WHERE venta_id = %s
+                    ORDER BY id;
+                    """,
+                    (venta_id,),
+                )
+                detalles = cur.fetchall()
+
+        return {
+            "id": venta[0],
+            "sesion_id": venta[1],
+            "fecha": venta[2],
+            "monto_total": venta[3],
+            "metodo_pago": venta[4],
+            "estado": venta[5],
+            "tipo_entrega": venta[6],
+            "recargo_delivery": venta[7],
+            "items": [
+                {
+                    "cant": detalle[0],
+                    "nombre": detalle[1],
+                    "precio_unitario": detalle[2],
+                    "subtotal": detalle[3],
+                    "obs": detalle[4],
+                    "es_extra": detalle[5],
+                    "parent_detalle_id": detalle[6],
+                }
+                for detalle in detalles
+            ],
+        }
+
+    def obtener_historial_ventas(self, fecha_inicio=None, fecha_fin=None):
+        query = """
+            SELECT id, sesion_id, fecha_hora, monto_total, metodo_pago,
+                   estado, tipo_entrega, recargo_delivery
+            FROM ventas
+            WHERE 1 = 1
+        """
+        params = []
+
+        if fecha_inicio is not None:
+            query += " AND fecha_hora >= %s"
+            params.append(fecha_inicio)
+        if fecha_fin is not None:
+            query += " AND fecha_hora <= %s"
+            params.append(fecha_fin)
+
+        query += " ORDER BY fecha_hora DESC, id DESC;"
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(params))
+                return cur.fetchall()
+
+    def actualizar_metodo_pago_venta(self, ticket_id, nuevo_metodo):
+        nuevo_metodo = self._validar_metodo_pago(nuevo_metodo)
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE ventas AS v
+                    SET metodo_pago = %s
+                    FROM sesiones_caja AS s
+                    WHERE v.id = %s
+                      AND v.sesion_id = s.id
+                      AND s.estado = 'ABIERTA'
+                      AND v.estado = 'COMPLETADA';
+                    """,
+                    (nuevo_metodo, ticket_id),
+                )
+                if cur.rowcount != 1:
+                    raise VentaNoModificableError(
+                        "La venta no existe, ya fue anulada o no pertenece "
+                        "a la sesión de caja abierta."
+                    )
+
+    def anular_venta(self, ticket_id):
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE ventas AS v
+                    SET estado = 'ANULADA'
+                    FROM sesiones_caja AS s
+                    WHERE v.id = %s
+                      AND v.sesion_id = s.id
+                      AND s.estado = 'ABIERTA'
+                      AND v.estado = 'COMPLETADA';
+                    """,
+                    (ticket_id,),
+                )
+                if cur.rowcount != 1:
+                    raise VentaNoModificableError(
+                        "La venta no existe, ya fue anulada o no pertenece "
+                        "a la sesión de caja abierta."
+                    )
+
+    # ==================================================================
+    # 7. RESÚMENES / REPORTES
+    # ==================================================================
+
+    def obtener_resumen_caja(self):
+        """
+        Devuelve el resumen de la sesión ABIERTA con una sola conexión.
+        """
+        cero = Decimal("0")
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, fecha_apertura, monto_inicial
+                    FROM sesiones_caja
+                    WHERE estado = 'ABIERTA'
+                    ORDER BY fecha_apertura DESC, id DESC
+                    LIMIT 1;
+                    """
+                )
+                sesion = cur.fetchone()
+
+                if not sesion:
+                    return {
+                        "sesion_id": None,
+                        "fecha_apertura": None,
+                        "monto_inicial": cero,
+                        "total_ventas": cero,
+                        "desglose_pagos": {},
+                        "desglose_categorias": {},
+                        "efectivo_esperado": cero,
+                        "ventas_completadas": 0,
+                        "ventas_anuladas": 0,
+                    }
+
+                sesion_id, fecha_apertura, monto_inicial = sesion
+
+                cur.execute(
+                    """
+                    SELECT metodo_pago, COUNT(*), COALESCE(SUM(monto_total), 0)
+                    FROM ventas
+                    WHERE sesion_id = %s
+                      AND estado = 'COMPLETADA'
+                    GROUP BY metodo_pago
+                    ORDER BY metodo_pago;
+                    """,
+                    (sesion_id,),
+                )
+
+                desglose_pagos = {}
+                total_ventas = cero
+                ventas_completadas = 0
+
+                for metodo, cantidad, monto in cur.fetchall():
+                    monto = monto or cero
+                    desglose_pagos[metodo] = monto
+                    total_ventas += monto
+                    ventas_completadas += cantidad
+
+                cur.execute(
+                    """
+                    SELECT COUNT(*)
+                    FROM ventas
+                    WHERE sesion_id = %s
+                      AND estado = 'ANULADA';
+                    """,
+                    (sesion_id,),
+                )
+                ventas_anuladas = cur.fetchone()[0]
+
+                cur.execute(
+                    """
+                    SELECT
+                        COALESCE(p.categoria, 'VARIOS') AS categoria,
+                        COALESCE(NULLIF(TRIM(p.subcategoria), ''), 'General') AS subcategoria,
+                        COALESCE(SUM(dv.subtotal), 0) AS total
+                    FROM detalle_ventas AS dv
+                    JOIN ventas AS v ON v.id = dv.venta_id
+                    LEFT JOIN productos AS p
+                        ON LOWER(TRIM(p.nombre)) = LOWER(TRIM(dv.producto_nombre))
+                    WHERE v.sesion_id = %s
+                      AND v.estado = 'COMPLETADA'
+                    GROUP BY p.categoria, p.subcategoria
+                    ORDER BY categoria, subcategoria;
+                    """,
+                    (sesion_id,),
+                )
+
+                desglose_categorias = {}
+                for categoria, subcategoria, monto in cur.fetchall():
+                    desglose_categorias.setdefault(categoria, {})[subcategoria] = monto
+
+        monto_inicial = monto_inicial or cero
+        efectivo = desglose_pagos.get("Efectivo", cero)
+
+        return {
+            "sesion_id": sesion_id,
+            "fecha_apertura": fecha_apertura,
+            "monto_inicial": monto_inicial,
+            "total_ventas": total_ventas,
+            "desglose_pagos": desglose_pagos,
+            "desglose_categorias": desglose_categorias,
+            "efectivo_esperado": monto_inicial + efectivo,
+            "ventas_completadas": ventas_completadas,
+            "ventas_anuladas": ventas_anuladas,
+        }
+
+    def obtener_resumen_sesiones(self, limite=100):
+        """Historial de dinero manejado por sesión de caja."""
+        limite = max(1, min(int(limite), 1000))
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        s.id,
+                        s.fecha_apertura,
+                        s.fecha_cierre,
+                        s.estado,
+                        s.monto_inicial,
+                        COUNT(v.id) FILTER (WHERE v.estado = 'COMPLETADA') AS ventas,
+                        COUNT(v.id) FILTER (WHERE v.estado = 'ANULADA') AS anuladas,
+                        COALESCE(SUM(v.monto_total) FILTER (
+                            WHERE v.estado = 'COMPLETADA'
+                              AND v.metodo_pago = 'Efectivo'
+                        ), 0) AS efectivo,
+                        COALESCE(SUM(v.monto_total) FILTER (
+                            WHERE v.estado = 'COMPLETADA'
+                              AND v.metodo_pago = 'POS / Tarjeta'
+                        ), 0) AS pos,
+                        COALESCE(SUM(v.monto_total) FILTER (
+                            WHERE v.estado = 'COMPLETADA'
+                              AND v.metodo_pago = 'Transferencia'
+                        ), 0) AS transferencia,
+                        COALESCE(SUM(v.monto_total) FILTER (
+                            WHERE v.estado = 'COMPLETADA'
+                        ), 0) AS total_ventas,
+                        s.monto_inicial + COALESCE(SUM(v.monto_total) FILTER (
+                            WHERE v.estado = 'COMPLETADA'
+                              AND v.metodo_pago = 'Efectivo'
+                        ), 0) AS efectivo_esperado
+                    FROM sesiones_caja s
+                    LEFT JOIN ventas v ON v.sesion_id = s.id
+                    GROUP BY s.id
+                    ORDER BY s.id DESC
+                    LIMIT %s;
+                    """,
+                    (limite,),
+                )
+
+                filas = cur.fetchall()
+
+        return [
+            {
+                "sesion_id": f[0],
+                "fecha_apertura": f[1],
+                "fecha_cierre": f[2],
+                "estado": f[3],
+                "monto_inicial": f[4],
+                "ventas": f[5],
+                "anuladas": f[6],
+                "efectivo": f[7],
+                "pos": f[8],
+                "transferencia": f[9],
+                "total_ventas": f[10],
+                "efectivo_esperado": f[11],
+            }
+            for f in filas
+        ]
+
+    def obtener_resumen_mensual(self, limite_meses=24):
+        """Totales mensuales por medio de pago."""
+        limite_meses = max(1, min(int(limite_meses), 120))
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        DATE_TRUNC('month', fecha_hora)::date AS mes,
+                        COUNT(*) AS cantidad_ventas,
+                        COALESCE(SUM(monto_total) FILTER (
+                            WHERE metodo_pago = 'Efectivo'
+                        ), 0) AS efectivo,
+                        COALESCE(SUM(monto_total) FILTER (
+                            WHERE metodo_pago = 'POS / Tarjeta'
+                        ), 0) AS pos,
+                        COALESCE(SUM(monto_total) FILTER (
+                            WHERE metodo_pago = 'Transferencia'
+                        ), 0) AS transferencia,
+                        COALESCE(SUM(monto_total), 0) AS total
+                    FROM ventas
+                    WHERE estado = 'COMPLETADA'
+                    GROUP BY DATE_TRUNC('month', fecha_hora)
+                    ORDER BY mes DESC
+                    LIMIT %s;
+                    """,
+                    (limite_meses,),
+                )
+                filas = cur.fetchall()
+
+        return [
+            {
+                "mes": f[0],
+                "cantidad_ventas": f[1],
+                "efectivo": f[2],
+                "pos": f[3],
+                "transferencia": f[4],
+                "total": f[5],
+            }
+            for f in filas
+        ]
+
+
+Database = DBManager
