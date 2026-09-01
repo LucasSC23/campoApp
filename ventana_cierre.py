@@ -1,3 +1,4 @@
+import threading
 import tkinter as tk
 from decimal import Decimal, InvalidOperation
 from tkinter import messagebox, ttk
@@ -5,8 +6,9 @@ from tkinter import messagebox, ttk
 
 BG = "#141722"
 PANEL = "#1c2030"
-MUTED = "#a0a5b5"
+PANEL_2 = "#252a3e"
 TEXT = "#ffffff"
+MUTED = "#a0a5b5"
 GREEN = "#10b981"
 RED = "#ef4444"
 BLUE = "#60a5fa"
@@ -24,12 +26,18 @@ class VentanaCierreCaja(tk.Toplevel):
 
     def __init__(self, parent, db):
         super().__init__(parent)
+
         self.parent = parent
         self.db = db
+        self._cerrando = False
 
         self.title("Cierre de Caja")
-        self.geometry("590x720")
-        self.minsize(540, 640)
+
+        # 680 px para que el footer no quede debajo de la barra de tareas
+        self.geometry("590x680")
+        self.minsize(540, 560)
+        self.resizable(True, True)
+
         self.configure(bg=BG)
         self.transient(parent)
         self.grab_set()
@@ -37,8 +45,20 @@ class VentanaCierreCaja(tk.Toplevel):
         self._crear_interfaz()
         self.cargar_datos()
 
+    # ==================================================================
+    # INTERFAZ
+    # ==================================================================
+
     def _crear_interfaz(self):
-        header = tk.Frame(self, bg=PANEL, pady=14)
+        # --------------------------------------------------------------
+        # HEADER
+        # --------------------------------------------------------------
+        header = tk.Frame(
+            self,
+            bg=PANEL,
+            padx=16,
+            pady=14,
+        )
         header.pack(fill="x")
 
         tk.Label(
@@ -51,19 +71,83 @@ class VentanaCierreCaja(tk.Toplevel):
 
         self.lbl_sesion = tk.Label(
             header,
-            text="Cargando...",
+            text="",
             font=("Helvetica", 9, "bold"),
             fg=BLUE,
             bg=PANEL,
         )
         self.lbl_sesion.pack(pady=(4, 0))
 
-        container = tk.Frame(self, bg=BG, padx=20, pady=12)
-        container.pack(fill="both", expand=True)
+        # --------------------------------------------------------------
+        # FOOTER FIJO
+        # IMPORTANTE: se crea antes del contenido expandible.
+        # --------------------------------------------------------------
+        footer = tk.Frame(
+            self,
+            bg=BG,
+            padx=20,
+            pady=12,
+        )
+        footer.pack(
+            side="bottom",
+            fill="x",
+        )
+
+        self.btn_cancelar = tk.Button(
+            footer,
+            text="Cancelar",
+            command=self.destroy,
+            bg="#374151",
+            fg=TEXT,
+            activebackground="#4b5563",
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Helvetica", 10, "bold"),
+            padx=16,
+            pady=8,
+            cursor="hand2",
+        )
+        self.btn_cancelar.pack(side="left")
+
+        self.btn_cerrar = tk.Button(
+            footer,
+            text="Guardar y Cerrar Caja",
+            command=self.cerrar_caja,
+            bg=RED,
+            fg=TEXT,
+            activebackground="#dc2626",
+            activeforeground=TEXT,
+            relief="flat",
+            font=("Helvetica", 10, "bold"),
+            padx=18,
+            pady=8,
+            cursor="hand2",
+        )
+        self.btn_cerrar.pack(side="right")
+
+        # --------------------------------------------------------------
+        # CONTENIDO
+        # --------------------------------------------------------------
+        container = tk.Frame(
+            self,
+            bg=BG,
+            padx=20,
+            pady=10,
+        )
+        container.pack(
+            fill="both",
+            expand=True,
+        )
 
         self.lbl_monto_inicial = self._label_resumen(container)
+        self.lbl_monto_inicial.pack(fill="x", pady=2)
+
         self.lbl_total_ventas = self._label_resumen(container)
+        self.lbl_total_ventas.pack(fill="x", pady=2)
+
+        # Nombre único y consistente en todo el archivo:
         self.lbl_efectivo_recibido = self._label_resumen(container)
+        self.lbl_efectivo_recibido.pack(fill="x", pady=2)
 
         self.lbl_efectivo_esperado = tk.Label(
             container,
@@ -74,7 +158,10 @@ class VentanaCierreCaja(tk.Toplevel):
             pady=11,
             relief="groove",
         )
-        self.lbl_efectivo_esperado.pack(fill="x", pady=10)
+        self.lbl_efectivo_esperado.pack(
+            fill="x",
+            pady=10,
+        )
 
         self.lbl_cantidades = tk.Label(
             container,
@@ -84,7 +171,10 @@ class VentanaCierreCaja(tk.Toplevel):
             font=("Helvetica", 9),
             anchor="w",
         )
-        self.lbl_cantidades.pack(fill="x", pady=(0, 8))
+        self.lbl_cantidades.pack(
+            fill="x",
+            pady=(0, 8),
+        )
 
         tk.Label(
             container,
@@ -93,10 +183,21 @@ class VentanaCierreCaja(tk.Toplevel):
             bg=BG,
             font=("Helvetica", 10, "bold"),
             anchor="w",
-        ).pack(fill="x", pady=(5, 3))
+        ).pack(
+            fill="x",
+            pady=(5, 3),
+        )
 
-        self.frame_pagos = tk.Frame(container, bg=PANEL, padx=12, pady=8)
-        self.frame_pagos.pack(fill="x", pady=(0, 10))
+        self.frame_pagos = tk.Frame(
+            container,
+            bg=PANEL,
+            padx=12,
+            pady=8,
+        )
+        self.frame_pagos.pack(
+            fill="x",
+            pady=(0, 10),
+        )
 
         tk.Label(
             container,
@@ -105,19 +206,42 @@ class VentanaCierreCaja(tk.Toplevel):
             bg=BG,
             font=("Helvetica", 10, "bold"),
             anchor="w",
-        ).pack(fill="x", pady=(5, 3))
+        ).pack(
+            fill="x",
+            pady=(5, 3),
+        )
 
-        scroll_container = tk.Frame(container, bg=PANEL)
-        scroll_container.pack(fill="both", expand=True)
+        # --------------------------------------------------------------
+        # ÚNICAMENTE ESTA PARTE TIENE SCROLL
+        # --------------------------------------------------------------
+        scroll_container = tk.Frame(
+            container,
+            bg=PANEL,
+        )
+        scroll_container.pack(
+            fill="both",
+            expand=True,
+        )
 
-        self.canvas = tk.Canvas(scroll_container, bg=PANEL, highlightthickness=0)
+        self.canvas = tk.Canvas(
+            scroll_container,
+            bg=PANEL,
+            highlightthickness=0,
+        )
+
         scrollbar = ttk.Scrollbar(
             scroll_container,
             orient="vertical",
             command=self.canvas.yview,
         )
 
-        self.frame_categorias = tk.Frame(self.canvas, bg=PANEL, padx=10, pady=8)
+        self.frame_categorias = tk.Frame(
+            self.canvas,
+            bg=PANEL,
+            padx=10,
+            pady=8,
+        )
+
         self.cat_window_id = self.canvas.create_window(
             (0, 0),
             window=self.frame_categorias,
@@ -126,127 +250,163 @@ class VentanaCierreCaja(tk.Toplevel):
 
         self.frame_categorias.bind(
             "<Configure>",
-            lambda _e: self.canvas.configure(scrollregion=self.canvas.bbox("all")),
+            lambda _e: self.canvas.configure(
+                scrollregion=self.canvas.bbox("all")
+            ),
         )
+
         self.canvas.bind(
             "<Configure>",
-            lambda e: self.canvas.itemconfig(self.cat_window_id, width=e.width),
+            lambda e: self.canvas.itemconfig(
+                self.cat_window_id,
+                width=e.width,
+            ),
         )
-        self.canvas.configure(yscrollcommand=scrollbar.set)
-        self.canvas.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
 
-        botones = tk.Frame(self, bg=BG, padx=20, pady=14)
-        botones.pack(fill="x")
-
-        tk.Button(
-            botones,
-            text="Cancelar",
-            command=self.destroy,
-            bg="#374151",
-            fg=TEXT,
-            relief="flat",
-            font=("Helvetica", 10, "bold"),
-            padx=16,
-            pady=8,
-            cursor="hand2",
-        ).pack(side="left")
-
-        self.btn_cerrar = tk.Button(
-            botones,
-            text="Confirmar Cierre de Caja",
-            command=self.cerrar_caja,
-            bg=RED,
-            fg=TEXT,
-            relief="flat",
-            font=("Helvetica", 10, "bold"),
-            padx=16,
-            pady=8,
-            cursor="hand2",
-            state="disabled",
+        self.canvas.configure(
+            yscrollcommand=scrollbar.set
         )
-        self.btn_cerrar.pack(side="right")
+
+        self.canvas.pack(
+            side="left",
+            fill="both",
+            expand=True,
+        )
+
+        scrollbar.pack(
+            side="right",
+            fill="y",
+        )
 
     def _label_resumen(self, parent):
-        label = tk.Label(
+        return tk.Label(
             parent,
-            text="Cargando...",
+            text="",
             fg=MUTED,
             bg=BG,
             font=("Helvetica", 10),
             anchor="w",
         )
-        label.pack(fill="x", pady=2)
-        return label
+
+    # ==================================================================
+    # DATOS
+    # ==================================================================
 
     def cargar_datos(self):
-        self.btn_cerrar.config(state="disabled", text="Cargando...")
+        """
+        Carga el resumen. La consulta se hace en un thread para no bloquear
+        la ventana mientras Supabase responde.
+        """
+        self.lbl_efectivo_recibido.config(text="Cargando...")
+        self.btn_cerrar.config(state="disabled")
 
-        if hasattr(self.parent, "run_async"):
-            self.parent.run_async(
-                self.db.obtener_resumen_caja,
-                self._aplicar_resumen,
-                self._error_carga,
+        threading.Thread(
+            target=self._cargar_datos_bd,
+            daemon=True,
+        ).start()
+
+    def _cargar_datos_bd(self):
+        try:
+            sesion = self.db.obtener_sesion_abierta()
+            resumen = self.db.obtener_resumen_caja()
+
+            self.after(
+                0,
+                lambda: self._aplicar_datos(
+                    sesion,
+                    resumen,
+                ),
             )
-        else:
-            try:
-                self._aplicar_resumen(self.db.obtener_resumen_caja())
-            except Exception as exc:
-                self._error_carga(str(exc))
 
-    def _error_carga(self, mensaje):
-        if not self.winfo_exists():
+        except Exception as exc:
+            mensaje = str(exc)
+
+            self.after(
+                0,
+                lambda msg=mensaje: self._error_carga(msg),
+            )
+
+    def _aplicar_datos(self, sesion, resumen):
+        if not sesion:
+            self.lbl_sesion.config(
+                text="NO HAY SESIÓN ABIERTA"
+            )
+            self.lbl_efectivo_recibido.config(text="")
+            self.btn_cerrar.config(state="disabled")
             return
-        self.btn_cerrar.config(state="disabled", text="Cerrar Caja")
-        messagebox.showerror(
-            "Error",
-            f"No se pudo cargar el cierre de caja:\n{mensaje}",
-            parent=self,
-        )
-
-    def _aplicar_resumen(self, resumen):
-        if not self.winfo_exists():
-            return
-
-        if not resumen.get("sesion_id"):
-            self.lbl_sesion.config(text="NO HAY SESIÓN ABIERTA")
-            self.btn_cerrar.config(state="disabled", text="Cerrar Caja")
-            return
-
-        fecha = resumen.get("fecha_apertura")
-        fecha_txt = fecha.strftime("%d/%m/%Y %H:%M") if fecha else ""
 
         self.lbl_sesion.config(
-            text=f"Sesión #{resumen['sesion_id']} · abierta {fecha_txt}"
-        )
-        self.lbl_monto_inicial.config(
-            text=f"Fondo inicial: {fmt_gs(resumen['monto_inicial'])}"
-        )
-        self.lbl_total_ventas.config(
-            text=f"Total procesado en ventas: {fmt_gs(resumen['total_ventas'])}"
-        )
-
-        efectivo = resumen.get("desglose_pagos", {}).get("Efectivo", Decimal("0"))
-        self.lbl_efectivo_recibido.config(
-            text=f"Efectivo recibido por ventas: {fmt_gs(efectivo)}"
-        )
-        self.lbl_efectivo_esperado.config(
-            text=f"EFECTIVO ESPERADO: {fmt_gs(resumen['efectivo_esperado'])}"
-        )
-        self.lbl_cantidades.config(
             text=(
-                f"Ventas completadas: {resumen['ventas_completadas']}   |   "
-                f"Ventas anuladas: {resumen['ventas_anuladas']}"
+                f"Sesión #{sesion['id']} · "
+                f"abierta {sesion['fecha_apertura']:%d/%m/%Y %H:%M}"
             )
         )
 
+        monto_inicial = resumen.get(
+            "monto_inicial",
+            Decimal("0"),
+        )
+
+        total_ventas = resumen.get(
+            "total_ventas",
+            Decimal("0"),
+        )
+
+        desglose_pagos = resumen.get(
+            "desglose_pagos",
+            {},
+        )
+
+        efectivo_recibido = desglose_pagos.get(
+            "Efectivo",
+            Decimal("0"),
+        )
+
+        efectivo_esperado = resumen.get(
+            "efectivo_esperado",
+            monto_inicial + efectivo_recibido,
+        )
+
+        self.lbl_monto_inicial.config(
+            text=f"Fondo inicial: {fmt_gs(monto_inicial)}"
+        )
+
+        self.lbl_total_ventas.config(
+            text=f"Total procesado en ventas: {fmt_gs(total_ventas)}"
+        )
+
+        self.lbl_efectivo_recibido.config(
+            text=(
+                "Efectivo recibido por ventas: "
+                f"{fmt_gs(efectivo_recibido)}"
+            )
+        )
+
+        self.lbl_efectivo_esperado.config(
+            text=(
+                "EFECTIVO ESPERADO: "
+                f"{fmt_gs(efectivo_esperado)}"
+            )
+        )
+
+        self.lbl_cantidades.config(
+            text=(
+                f"Ventas completadas: "
+                f"{resumen.get('ventas_completadas', 0)}"
+                "   |   "
+                f"Ventas anuladas: "
+                f"{resumen.get('ventas_anuladas', 0)}"
+            )
+        )
+
+        # --------------------------------------------------------------
+        # MÉTODOS DE PAGO
+        # --------------------------------------------------------------
         for widget in self.frame_pagos.winfo_children():
             widget.destroy()
 
-        pagos = resumen.get("desglose_pagos", {})
-        if pagos:
-            for metodo in ("Efectivo", "POS / Tarjeta", "Transferencia"):
-                monto = pagos.get(metodo, Decimal("0"))
+        if desglose_pagos:
+            for metodo, monto in desglose_pagos.items():
                 tk.Label(
                     self.frame_pagos,
                     text=f"• {metodo}: {fmt_gs(monto)}",
@@ -254,7 +414,10 @@ class VentanaCierreCaja(tk.Toplevel):
                     bg=PANEL,
                     font=("Helvetica", 9),
                     anchor="w",
-                ).pack(fill="x", pady=1)
+                ).pack(
+                    fill="x",
+                    pady=2,
+                )
         else:
             tk.Label(
                 self.frame_pagos,
@@ -264,10 +427,17 @@ class VentanaCierreCaja(tk.Toplevel):
                 font=("Helvetica", 9, "italic"),
             ).pack(anchor="w")
 
+        # --------------------------------------------------------------
+        # CATEGORÍAS
+        # --------------------------------------------------------------
         for widget in self.frame_categorias.winfo_children():
             widget.destroy()
 
-        categorias = resumen.get("desglose_categorias", {})
+        categorias = resumen.get(
+            "desglose_categorias",
+            {},
+        )
+
         if categorias:
             for categoria, subcategorias in categorias.items():
                 tk.Label(
@@ -277,17 +447,26 @@ class VentanaCierreCaja(tk.Toplevel):
                     bg=PANEL,
                     font=("Helvetica", 9, "bold"),
                     anchor="w",
-                ).pack(fill="x", pady=(5, 1))
+                ).pack(
+                    fill="x",
+                    pady=(5, 1),
+                )
 
                 for subcategoria, monto in subcategorias.items():
                     tk.Label(
                         self.frame_categorias,
-                        text=f"    • {subcategoria}: {fmt_gs(monto)}",
+                        text=(
+                            f"    • {subcategoria}: "
+                            f"{fmt_gs(monto)}"
+                        ),
                         fg="#d1d5db",
                         bg=PANEL,
                         font=("Helvetica", 9),
                         anchor="w",
-                    ).pack(fill="x", pady=1)
+                    ).pack(
+                        fill="x",
+                        pady=1,
+                    )
         else:
             tk.Label(
                 self.frame_categorias,
@@ -297,56 +476,130 @@ class VentanaCierreCaja(tk.Toplevel):
                 font=("Helvetica", 9, "italic"),
             ).pack(anchor="w")
 
-        self.btn_cerrar.config(state="normal", text="Confirmar Cierre de Caja")
+        self.btn_cerrar.config(
+            state="normal"
+        )
 
-    def cerrar_caja(self):
-        confirmar = messagebox.askyesno(
-            "Confirmar cierre",
+    def _error_carga(self, mensaje):
+        self.lbl_efectivo_recibido.config(
+            text="Error al cargar datos."
+        )
+
+        messagebox.showerror(
+            "Error",
             (
-                "¿Está seguro de cerrar la caja y finalizar el turno?\n\n"
-                "Las ventas permanecerán registradas como COMPLETADA o ANULADA."
+                "No se pudo cargar "
+                "el cierre de caja:\n"
+                f"{mensaje}"
             ),
             parent=self,
         )
+
+        self.btn_cerrar.config(
+            state="disabled"
+        )
+
+    # ==================================================================
+    # CIERRE
+    # ==================================================================
+
+    def cerrar_caja(self):
+        if self._cerrando:
+            return
+
+        confirmar = messagebox.askyesno(
+            "Confirmar cierre",
+            (
+                "¿Está seguro de guardar el cierre "
+                "y finalizar el turno?\n\n"
+                "Las ventas permanecerán registradas "
+                "como COMPLETADA o ANULADA."
+            ),
+            parent=self,
+        )
+
         if not confirmar:
             return
 
-        self.btn_cerrar.config(state="disabled", text="Cerrando...")
-        self.config(cursor="watch")
+        self._cerrando = True
 
-        if hasattr(self.parent, "run_async"):
-            self.parent.run_async(
-                self.db.cerrar_caja,
-                self._cierre_correcto,
-                self._error_cierre,
+        self.btn_cerrar.config(
+            state="disabled",
+            text="Guardando cierre...",
+        )
+
+        self.btn_cancelar.config(
+            state="disabled"
+        )
+
+        self.config(
+            cursor="watch"
+        )
+
+        threading.Thread(
+            target=self._cerrar_caja_bd,
+            daemon=True,
+        ).start()
+
+    def _cerrar_caja_bd(self):
+        try:
+            sesion_id = self.db.cerrar_caja()
+
+            self.after(
+                0,
+                lambda: self._cierre_exitoso(
+                    sesion_id
+                ),
             )
-        else:
-            try:
-                self._cierre_correcto(self.db.cerrar_caja())
-            except Exception as exc:
-                self._error_cierre(str(exc))
 
-    def _error_cierre(self, mensaje):
-        if not self.winfo_exists():
-            return
-        self.config(cursor="")
-        self.btn_cerrar.config(state="normal", text="Confirmar Cierre de Caja")
+        except Exception as exc:
+            mensaje = str(exc)
+
+            self.after(
+                0,
+                lambda msg=mensaje: self._cierre_error(msg),
+            )
+
+    def _cierre_exitoso(self, sesion_id):
+        self.config(
+            cursor=""
+        )
+
+        messagebox.showinfo(
+            "Caja cerrada",
+            (
+                f"La sesión #{sesion_id} "
+                "fue guardada y cerrada correctamente."
+            ),
+            parent=self,
+        )
+
+        self.destroy()
+
+        if hasattr(
+            self.parent,
+            "on_caja_cerrada",
+        ):
+            self.parent.on_caja_cerrada()
+
+    def _cierre_error(self, mensaje):
+        self._cerrando = False
+
+        self.config(
+            cursor=""
+        )
+
+        self.btn_cerrar.config(
+            state="normal",
+            text="Guardar y Cerrar Caja",
+        )
+
+        self.btn_cancelar.config(
+            state="normal"
+        )
+
         messagebox.showerror(
             "No se pudo cerrar la caja",
             mensaje,
             parent=self,
         )
-
-    def _cierre_correcto(self, sesion_id):
-        if not self.winfo_exists():
-            return
-        self.config(cursor="")
-        messagebox.showinfo(
-            "Caja cerrada",
-            f"La sesión #{sesion_id} fue cerrada correctamente.",
-            parent=self,
-        )
-        self.destroy()
-
-        if hasattr(self.parent, "on_caja_cerrada"):
-            self.parent.on_caja_cerrada()
