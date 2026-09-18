@@ -18,7 +18,7 @@ def fmt_gs(monto):
 
 
 class VentanaReportes(tk.Toplevel):
-    """Historial de sesiones y resumen mensual por método de pago."""
+    """Historial de sesiones y resúmenes semanal/mensual por método de pago."""
 
     def __init__(self, parent, db):
         super().__init__(parent)
@@ -104,12 +104,15 @@ class VentanaReportes(tk.Toplevel):
         notebook.pack(fill="both", expand=True, padx=12, pady=(0, 12))
 
         tab_sesiones = tk.Frame(notebook, bg=BG)
+        tab_semanal = tk.Frame(notebook, bg=BG)
         tab_mensual = tk.Frame(notebook, bg=BG)
 
         notebook.add(tab_sesiones, text="Sesiones de caja")
+        notebook.add(tab_semanal, text="Resumen semanal")
         notebook.add(tab_mensual, text="Resumen mensual")
 
         self._crear_tabla_sesiones(tab_sesiones)
+        self._crear_tabla_semanal(tab_semanal)
         self._crear_tabla_mensual(tab_mensual)
 
     def _crear_tabla_sesiones(self, parent):
@@ -199,6 +202,56 @@ class VentanaReportes(tk.Toplevel):
         frame.rowconfigure(0, weight=1)
         frame.columnconfigure(0, weight=1)
 
+    def _crear_tabla_semanal(self, parent):
+        columnas = (
+            "semana",
+            "tickets",
+            "efectivo",
+            "pos",
+            "transferencia",
+            "total",
+        )
+
+        frame = tk.Frame(parent, bg=BG)
+        frame.pack(fill="both", expand=True, padx=8, pady=8)
+
+        self.tree_semanal = ttk.Treeview(
+            frame,
+            columns=columnas,
+            show="headings",
+            style="Campo.Treeview",
+        )
+
+        encabezados = {
+            "semana": "Semana",
+            "tickets": "Ventas",
+            "efectivo": "Efectivo",
+            "pos": "POS / Tarjeta",
+            "transferencia": "Transferencia",
+            "total": "Total semanal",
+        }
+
+        for col in columnas:
+            self.tree_semanal.heading(col, text=encabezados[col])
+            self.tree_semanal.column(
+                col,
+                width=185 if col == "semana" else (100 if col == "tickets" else 160),
+                anchor="center",
+                stretch=True,
+            )
+
+        scroll_y = ttk.Scrollbar(
+            frame,
+            orient="vertical",
+            command=self.tree_semanal.yview,
+        )
+        self.tree_semanal.configure(yscrollcommand=scroll_y.set)
+
+        self.tree_semanal.grid(row=0, column=0, sticky="nsew")
+        scroll_y.grid(row=0, column=1, sticky="ns")
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+
     def _crear_tabla_mensual(self, parent):
         columnas = (
             "mes",
@@ -267,8 +320,9 @@ class VentanaReportes(tk.Toplevel):
 
     def _consultar_reportes(self):
         sesiones = self.db.obtener_resumen_sesiones(200)
+        semanal = self.db.obtener_resumen_semanal(52)
         mensual = self.db.obtener_resumen_mensual(36)
-        return sesiones, mensual
+        return sesiones, semanal, mensual
 
     def _mostrar_error(self, mensaje):
         if not self.winfo_exists():
@@ -285,7 +339,7 @@ class VentanaReportes(tk.Toplevel):
         if not self.winfo_exists():
             return
 
-        sesiones, mensual = datos
+        sesiones, semanal, mensual = datos
 
         for item in self.tree_sesiones.get_children():
             self.tree_sesiones.delete(item)
@@ -321,6 +375,35 @@ class VentanaReportes(tk.Toplevel):
                 ),
             )
 
+        for item in self.tree_semanal.get_children():
+            self.tree_semanal.delete(item)
+
+        for fila in semanal:
+            inicio = (
+                fila["semana_inicio"].strftime("%d/%m/%Y")
+                if fila["semana_inicio"]
+                else ""
+            )
+            fin = (
+                fila["semana_fin"].strftime("%d/%m/%Y")
+                if fila["semana_fin"]
+                else ""
+            )
+            semana = f"{inicio} - {fin}" if inicio and fin else ""
+
+            self.tree_semanal.insert(
+                "",
+                "end",
+                values=(
+                    semana,
+                    fila["cantidad_ventas"],
+                    fmt_gs(fila["efectivo"]),
+                    fmt_gs(fila["pos"]),
+                    fmt_gs(fila["transferencia"]),
+                    fmt_gs(fila["total"]),
+                ),
+            )
+
         for item in self.tree_mensual.get_children():
             self.tree_mensual.delete(item)
 
@@ -341,5 +424,9 @@ class VentanaReportes(tk.Toplevel):
 
         self.btn_actualizar.config(state="normal", text="↻ Actualizar")
         self.lbl_estado.config(
-            text=f"{len(sesiones)} sesiones · {len(mensual)} meses"
+            text=(
+                f"{len(sesiones)} sesiones · "
+                f"{len(semanal)} semanas · "
+                f"{len(mensual)} meses"
+            )
         )

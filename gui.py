@@ -28,6 +28,19 @@ def fmt_gs(monto):
         return f"Gs. {monto}"
 
 
+def fmt_gramos(valor):
+    """Formatea gramos sin ceros decimales innecesarios."""
+    try:
+        gramos = Decimal(str(valor))
+    except (InvalidOperation, ValueError, TypeError):
+        return str(valor)
+
+    if gramos == gramos.to_integral_value():
+        return str(int(gramos))
+
+    return format(gramos.normalize(), "f")
+
+
 def parse_gs(texto):
     if texto is None:
         return None
@@ -216,12 +229,23 @@ class VentanaHistorialVentas(tk.Toplevel):
             for item in detalle:
                 obs = f" ({item['obs']})" if item.get("obs") else ""
                 prefijo = "  + " if item.get("es_extra") else "• "
-                tk.Label(
-                    detalle_frame,
-                    text=(
+
+                if item.get("peso_gramos") is not None:
+                    detalle_texto = (
+                        f"{prefijo}{item['nombre']}{obs} — "
+                        f"{fmt_gramos(item['peso_gramos'])} g × "
+                        f"{fmt_gs(item['precio_kg'])}/kg"
+                        f" — {fmt_gs(item['subtotal'])}"
+                    )
+                else:
+                    detalle_texto = (
                         f"{prefijo}{item['cant']}x {item['nombre']}{obs}"
                         f"  —  {fmt_gs(item['subtotal'])}"
-                    ),
+                    )
+
+                tk.Label(
+                    detalle_frame,
+                    text=detalle_texto,
                     font=("Helvetica", 8),
                     fg=TEXT,
                     bg=BG,
@@ -329,8 +353,21 @@ class VentanaTicket(tk.Toplevel):
 
         for item in items:
             obs = f" ({item['obs']})" if item.get("obs") else ""
-            lineas.append(f"{item['cant']}x {item['nombre']}{obs}")
-            lineas.append(f"{fmt_gs(item['subtotal']):>35}")
+
+            if item.get("peso_gramos") is not None:
+                lineas.append(f"{item['nombre']}{obs}")
+                lineas.append(
+                    f"{fmt_gramos(item['peso_gramos'])} g x "
+                    f"{fmt_gs(item['precio_kg'])}/kg"
+                )
+            else:
+                lineas.append(
+                    f"{item['cant']}x {item['nombre']}{obs}"
+                )
+
+            lineas.append(
+                f"{fmt_gs(item['subtotal']):>35}"
+            )
 
         if Decimal(str(recargo_delivery)) > 0:
             lineas.append("-" * 35)
@@ -387,6 +424,7 @@ class VentanaPrincipal(tk.Tk):
         "Bebidas",
         "Helados y Postres",
         "Papas Fritas",
+        "Milanesas",
     ]
 
     MAPEO_CATEGORIAS_ANTIGUAS = {
@@ -398,6 +436,7 @@ class VentanaPrincipal(tk.Tk):
         super().__init__()
         self.db = db
         self.carrito = {}
+        self._secuencia_carrito = 0
         self.catalogo_productos = []
         self.categoria_actual = "TODOS"
 
@@ -623,12 +662,15 @@ class VentanaPrincipal(tk.Tk):
         header = tk.Frame(self, bg=HEADER_BG, padx=14, pady=10)
         header.pack(fill="x")
 
+        # ------------------------------------------------------------
+        # Lado izquierdo: título
+        # ------------------------------------------------------------
         titulo_frame = tk.Frame(header, bg=HEADER_BG)
         titulo_frame.pack(side="left")
 
         tk.Label(
             titulo_frame,
-            text="CAMPO BURGER & AÇAÍ",
+            text="🍔 CAMPO BURGER & AÇAÍ",
             font=("Segoe UI", 18, "bold"),
             fg=ORANGE,
             bg=HEADER_BG,
@@ -643,15 +685,72 @@ class VentanaPrincipal(tk.Tk):
         )
         self.lbl_sesion.pack(anchor="w")
 
+        # ------------------------------------------------------------
+        # Lado derecho: resumen + botones de acción
+        # ------------------------------------------------------------
+        derecha_header = tk.Frame(header, bg=HEADER_BG)
+        derecha_header.pack(side="right", anchor="e")
+
         self.lbl_resumen_header = tk.Label(
-            header,
+            derecha_header,
             text="Cargando resumen...",
             font=("Segoe UI", 9),
             fg=MUTED,
             bg=HEADER_BG,
         )
-        self.lbl_resumen_header.pack(side="right", padx=10)
+        self.lbl_resumen_header.pack(anchor="e", pady=(0, 6))
 
+        acciones = tk.Frame(derecha_header, bg=HEADER_BG)
+        acciones.pack(anchor="e")
+
+        tk.Button(
+            acciones,
+            text="Ventas del Turno",
+            command=self.abrir_historial,
+            bg=PANEL_2,
+            fg=ORANGE,
+            relief="flat",
+            font=("Helvetica", 9, "bold"),
+            padx=10,
+            cursor="hand2",
+        ).pack(side="left", padx=4)
+
+        tk.Button(
+            acciones,
+            text="Reportes",
+            command=self.abrir_reportes,
+            bg=PANEL_2,
+            fg=TEXT,
+            relief="flat",
+            font=("Helvetica", 9, "bold"),
+            padx=10,
+            cursor="hand2",
+        ).pack(side="left", padx=4)
+
+        self.btn_recargar_catalogo = tk.Button(
+            acciones,
+            text="↻",
+            command=lambda: self.cargar_catalogo_async(inicial=False),
+            bg=PANEL_2,
+            fg=MUTED,
+            relief="flat",
+            font=("Helvetica", 10, "bold"),
+            width=3,
+            cursor="hand2",
+        )
+        self.btn_recargar_catalogo.pack(side="left", padx=4)
+
+        tk.Button(
+            acciones,
+            text="Cerrar Caja",
+            command=self.abrir_cierre_caja,
+            bg=RED,
+            fg=TEXT,
+            relief="flat",
+            font=("Helvetica", 9, "bold"),
+            padx=10,
+            cursor="hand2",
+        ).pack(side="left", padx=(4, 0))
     def _crear_navegacion(self):
         self.frame_nav = tk.Frame(self, bg=PANEL, padx=10, pady=8)
         self.frame_nav.pack(fill="x")
@@ -686,56 +785,7 @@ class VentanaPrincipal(tk.Tk):
             )
             boton.pack(side="left", padx=2)
             self.botones_categoria[categoria] = boton
-
-        tk.Button(
-            self.frame_nav,
-            text="Cerrar Caja",
-            command=self.abrir_cierre_caja,
-            bg=RED,
-            fg=TEXT,
-            relief="flat",
-            font=("Helvetica", 9, "bold"),
-            padx=10,
-            cursor="hand2",
-        ).pack(side="right", padx=(6, 0))
-
-        tk.Button(
-            self.frame_nav,
-            text="Reportes",
-            command=self.abrir_reportes,
-            bg=PANEL_2,
-            fg=TEXT,
-            relief="flat",
-            font=("Helvetica", 9, "bold"),
-            padx=10,
-            cursor="hand2",
-        ).pack(side="right", padx=4)
-
-        tk.Button(
-            self.frame_nav,
-            text="Ventas del Turno",
-            command=self.abrir_historial,
-            bg=PANEL_2,
-            fg=ORANGE,
-            relief="flat",
-            font=("Helvetica", 9, "bold"),
-            padx=10,
-            cursor="hand2",
-        ).pack(side="right")
-
-        self.btn_recargar_catalogo = tk.Button(
-            self.frame_nav,
-            text="↻",
-            command=lambda: self.cargar_catalogo_async(inicial=False),
-            bg=PANEL_2,
-            fg=MUTED,
-            relief="flat",
-            font=("Helvetica", 10, "bold"),
-            width=3,
-            cursor="hand2",
-        )
-        self.btn_recargar_catalogo.pack(side="right", padx=5)
-
+        
     def _crear_contenido(self):
         main = tk.Frame(self, bg=BG)
         main.pack(fill="both", expand=True, padx=10, pady=10)
@@ -930,6 +980,11 @@ class VentanaPrincipal(tk.Tk):
         nombre = producto[1]
         precio = producto[2]
         descripcion = producto[5]
+        tipo_venta = (
+            str(producto[6] or "unidad").strip().lower()
+            if len(producto) > 6
+            else "unidad"
+        )
 
         card = tk.Frame(
             self.frame_productos_container,
@@ -963,9 +1018,15 @@ class VentanaPrincipal(tk.Tk):
                 wraplength=480,
             ).pack(fill="x", pady=2)
 
+        texto_precio = (
+            f"{fmt_gs(precio)} / kg"
+            if tipo_venta == "peso"
+            else fmt_gs(precio)
+        )
+
         tk.Label(
             info,
-            text=fmt_gs(precio),
+            text=texto_precio,
             font=("Helvetica", 9, "bold"),
             fg=MUTED,
             bg=PANEL,
@@ -990,7 +1051,18 @@ class VentanaPrincipal(tk.Tk):
     # ================================================================
 
     def agregar_al_carrito(self, producto):
+        tipo_venta = (
+            str(producto[6] or "unidad").strip().lower()
+            if len(producto) > 6
+            else "unidad"
+        )
+
+        if tipo_venta == "peso":
+            self._abrir_dialogo_peso(producto)
+            return
+
         producto_id = producto[0]
+
         if producto_id in self.carrito:
             self.carrito[producto_id]["cantidad"] += 1
         else:
@@ -998,22 +1070,188 @@ class VentanaPrincipal(tk.Tk):
                 "producto": producto,
                 "cantidad": 1,
                 "obs": None,
+                "peso_gramos": None,
+                "precio_kg": None,
+                "subtotal_peso": None,
             }
+
         self.refrescar_carrito_ui()
 
-    def cambiar_cantidad(self, producto_id, delta):
-        if producto_id not in self.carrito:
+    def _abrir_dialogo_peso(self, producto):
+        nombre = producto[1]
+        precio_kg = Decimal(str(producto[2]))
+
+        dialog = tk.Toplevel(self)
+        dialog.title("Ingresar peso")
+        dialog.geometry("380x270")
+        dialog.resizable(False, False)
+        dialog.configure(bg=BG)
+        dialog.transient(self)
+        dialog.grab_set()
+
+        tk.Label(
+            dialog,
+            text=nombre,
+            font=("Helvetica", 12, "bold"),
+            fg=ORANGE,
+            bg=BG,
+        ).pack(pady=(18, 4))
+
+        tk.Label(
+            dialog,
+            text=f"{fmt_gs(precio_kg)} / kg",
+            font=("Helvetica", 10, "bold"),
+            fg=TEXT,
+            bg=BG,
+        ).pack(pady=(0, 14))
+
+        tk.Label(
+            dialog,
+            text="Peso en gramos",
+            font=("Helvetica", 9, "bold"),
+            fg=TEXT,
+            bg=BG,
+        ).pack()
+
+        peso_var = tk.StringVar()
+        entry_peso = tk.Entry(
+            dialog,
+            textvariable=peso_var,
+            font=("Helvetica", 14),
+            justify="center",
+            width=16,
+        )
+        entry_peso.pack(pady=7)
+        entry_peso.focus_set()
+
+        lbl_total = tk.Label(
+            dialog,
+            text="Total: Gs. 0",
+            font=("Helvetica", 12, "bold"),
+            fg=GREEN,
+            bg=BG,
+        )
+        lbl_total.pack(pady=8)
+
+        def calcular():
+            texto = peso_var.get().strip()
+
+            if not texto:
+                lbl_total.config(text="Total: Gs. 0")
+                return None
+
+            try:
+                gramos = Decimal(texto.replace(",", "."))
+            except InvalidOperation:
+                lbl_total.config(text="Peso inválido", fg=RED)
+                return None
+
+            if not gramos.is_finite() or gramos <= 0:
+                lbl_total.config(text="Peso inválido", fg=RED)
+                return None
+
+            if gramos != gramos.to_integral_value():
+                lbl_total.config(text="Ingrese gramos enteros", fg=RED)
+                return None
+
+            subtotal = precio_kg * gramos / Decimal("1000")
+            lbl_total.config(
+                text=f"Total: {fmt_gs(subtotal)}",
+                fg=GREEN,
+            )
+            return gramos, subtotal
+
+        def actualizar_total(*_args):
+            calcular()
+
+        peso_var.trace_add("write", actualizar_total)
+
+        def confirmar():
+            resultado = calcular()
+
+            if resultado is None:
+                messagebox.showwarning(
+                    "Peso inválido",
+                    "Ingrese un peso válido en gramos, mayor que cero.",
+                    parent=dialog,
+                )
+                return
+
+            gramos, subtotal = resultado
+
+            self._secuencia_carrito += 1
+            clave_carrito = (
+                "peso",
+                producto[0],
+                self._secuencia_carrito,
+            )
+
+            self.carrito[clave_carrito] = {
+                "producto": producto,
+                "cantidad": 1,
+                "obs": None,
+                "peso_gramos": gramos,
+                "precio_kg": precio_kg,
+                "subtotal_peso": subtotal,
+            }
+
+            dialog.destroy()
+            self.refrescar_carrito_ui()
+
+        botones = tk.Frame(dialog, bg=BG)
+        botones.pack(side="bottom", pady=18)
+
+        tk.Button(
+            botones,
+            text="Agregar",
+            command=confirmar,
+            bg=GREEN,
+            fg=TEXT,
+            relief="flat",
+            padx=16,
+            pady=5,
+            cursor="hand2",
+        ).pack(side="left", padx=5)
+
+        tk.Button(
+            botones,
+            text="Cancelar",
+            command=dialog.destroy,
+            bg=PANEL_2,
+            fg=TEXT,
+            relief="flat",
+            padx=16,
+            pady=5,
+            cursor="hand2",
+        ).pack(side="left", padx=5)
+
+        dialog.bind("<Return>", lambda _e: confirmar())
+        dialog.bind("<Escape>", lambda _e: dialog.destroy())
+
+    def cambiar_cantidad(self, clave_carrito, delta):
+        if clave_carrito not in self.carrito:
             return
-        self.carrito[producto_id]["cantidad"] += delta
-        if self.carrito[producto_id]["cantidad"] <= 0:
-            del self.carrito[producto_id]
+
+        entrada = self.carrito[clave_carrito]
+
+        # Los productos por peso representan una pesada concreta.
+        # Para cambiar el peso se quita y se vuelve a agregar.
+        if entrada.get("peso_gramos") is not None:
+            return
+
+        entrada["cantidad"] += delta
+
+        if entrada["cantidad"] <= 0:
+            del self.carrito[clave_carrito]
+
         self.refrescar_carrito_ui()
 
-    def editar_observacion(self, producto_id):
-        if producto_id not in self.carrito:
+    def editar_observacion(self, clave_carrito):
+        if clave_carrito not in self.carrito:
             return
 
-        actual = self.carrito[producto_id].get("obs") or ""
+        actual = self.carrito[clave_carrito].get("obs") or ""
+
         dialog = tk.Toplevel(self)
         dialog.title("Observación")
         dialog.geometry("340x150")
@@ -1037,7 +1275,7 @@ class VentanaPrincipal(tk.Tk):
 
         def guardar():
             texto = entry.get().strip()
-            self.carrito[producto_id]["obs"] = texto or None
+            self.carrito[clave_carrito]["obs"] = texto or None
             dialog.destroy()
             self.refrescar_carrito_ui()
 
@@ -1064,8 +1302,8 @@ class VentanaPrincipal(tk.Tk):
             padx=12,
         ).pack(side="left", padx=4)
 
-    def quitar_del_carrito(self, producto_id):
-        self.carrito.pop(producto_id, None)
+    def quitar_del_carrito(self, clave_carrito):
+        self.carrito.pop(clave_carrito, None)
         self.refrescar_carrito_ui()
 
     def vaciar_carrito(self):
@@ -1078,17 +1316,31 @@ class VentanaPrincipal(tk.Tk):
 
         total = Decimal("0")
 
-        for producto_id, entrada in self.carrito.items():
+        for clave_carrito, entrada in self.carrito.items():
             producto = entrada["producto"]
             cantidad = entrada["cantidad"]
-            precio = Decimal(str(producto[2]))
-            subtotal = precio * cantidad
+
+            peso_gramos = entrada.get("peso_gramos")
+            es_por_peso = peso_gramos is not None
+
+            if es_por_peso:
+                precio_kg = Decimal(str(entrada["precio_kg"]))
+                subtotal = Decimal(str(entrada["subtotal_peso"]))
+            else:
+                precio = Decimal(str(producto[2]))
+                subtotal = precio * cantidad
+                precio_kg = None
+
             total += subtotal
 
             obs = entrada.get("obs")
             obs_texto = f" ({obs})" if obs else ""
 
-            fila = tk.Frame(self.frame_carrito_items, bg=PANEL, pady=5)
+            fila = tk.Frame(
+                self.frame_carrito_items,
+                bg=PANEL,
+                pady=5,
+            )
             fila.pack(fill="x", pady=2)
 
             tk.Label(
@@ -1102,41 +1354,69 @@ class VentanaPrincipal(tk.Tk):
                 font=("Helvetica", 9, "bold" if obs else "normal"),
             ).pack(anchor="w")
 
+            if es_por_peso:
+                tk.Label(
+                    fila,
+                    text=(
+                        f"{fmt_gramos(peso_gramos)} g × "
+                        f"{fmt_gs(precio_kg)}/kg"
+                    ),
+                    fg=MUTED,
+                    bg=PANEL,
+                    anchor="w",
+                    font=("Helvetica", 8),
+                ).pack(anchor="w", pady=(1, 0))
+
             controles = tk.Frame(fila, bg=PANEL)
             controles.pack(fill="x", pady=(3, 0))
 
-            tk.Button(
-                controles,
-                text="-",
-                command=lambda pid=producto_id: self.cambiar_cantidad(pid, -1),
-                width=2,
-                bg=PANEL_2,
-                fg=TEXT,
-                relief="flat",
-            ).pack(side="left")
+            if es_por_peso:
+                tk.Label(
+                    controles,
+                    text="Por peso",
+                    bg=PANEL,
+                    fg=MUTED,
+                    font=("Helvetica", 8, "bold"),
+                ).pack(side="left")
+            else:
+                tk.Button(
+                    controles,
+                    text="-",
+                    command=lambda clave=clave_carrito: self.cambiar_cantidad(
+                        clave, -1
+                    ),
+                    width=2,
+                    bg=PANEL_2,
+                    fg=TEXT,
+                    relief="flat",
+                ).pack(side="left")
 
-            tk.Label(
-                controles,
-                text=str(cantidad),
-                width=3,
-                bg=PANEL,
-                fg=TEXT,
-            ).pack(side="left")
+                tk.Label(
+                    controles,
+                    text=str(cantidad),
+                    width=3,
+                    bg=PANEL,
+                    fg=TEXT,
+                ).pack(side="left")
 
-            tk.Button(
-                controles,
-                text="+",
-                command=lambda pid=producto_id: self.cambiar_cantidad(pid, 1),
-                width=2,
-                bg=PANEL_2,
-                fg=TEXT,
-                relief="flat",
-            ).pack(side="left")
+                tk.Button(
+                    controles,
+                    text="+",
+                    command=lambda clave=clave_carrito: self.cambiar_cantidad(
+                        clave, 1
+                    ),
+                    width=2,
+                    bg=PANEL_2,
+                    fg=TEXT,
+                    relief="flat",
+                ).pack(side="left")
 
             tk.Button(
                 controles,
                 text="Obs",
-                command=lambda pid=producto_id: self.editar_observacion(pid),
+                command=lambda clave=clave_carrito: self.editar_observacion(
+                    clave
+                ),
                 bg=PANEL_2,
                 fg=ORANGE,
                 relief="flat",
@@ -1154,14 +1434,18 @@ class VentanaPrincipal(tk.Tk):
             tk.Button(
                 controles,
                 text="Quitar",
-                command=lambda pid=producto_id: self.quitar_del_carrito(pid),
+                command=lambda clave=clave_carrito: self.quitar_del_carrito(
+                    clave
+                ),
                 bg=RED,
                 fg=TEXT,
                 relief="flat",
                 font=("Helvetica", 8),
             ).pack(side="right")
 
-        self.lbl_total.config(text=f"TOTAL: {fmt_gs(total)}")
+        self.lbl_total.config(
+            text=f"TOTAL: {fmt_gs(total)}"
+        )
 
     # ================================================================
     # CONFIRMAR VENTA SIN CONGELAR TKINTER
@@ -1180,6 +1464,7 @@ class VentanaPrincipal(tk.Tk):
             return
 
         configuracion = self._pedir_datos_venta()
+
         if configuracion is None:
             return
 
@@ -1190,32 +1475,60 @@ class VentanaPrincipal(tk.Tk):
         for entrada in self.carrito.values():
             producto = entrada["producto"]
             cantidad = entrada["cantidad"]
-            precio = Decimal(str(producto[2]))
-            subtotal = precio * cantidad
+
+            peso_gramos = entrada.get("peso_gramos")
+            es_por_peso = peso_gramos is not None
+
+            if es_por_peso:
+                peso_gramos = Decimal(str(peso_gramos))
+                precio_kg = Decimal(str(entrada["precio_kg"]))
+                subtotal = Decimal(str(entrada["subtotal_peso"]))
+
+                # Cada pesada es un detalle independiente.
+                cantidad = 1
+                precio_unitario = subtotal
+            else:
+                precio_kg = None
+                precio_unitario = Decimal(str(producto[2]))
+                subtotal = precio_unitario * cantidad
+
             subtotal_productos += subtotal
 
             categoria = (
-                self._normalizar_categoria_catalogo(producto[3]).strip().upper()
+                self._normalizar_categoria_catalogo(producto[3])
+                .strip()
+                .upper()
             )
-            subcategoria = str(producto[4] or "").strip().upper()
-            es_extra = categoria == "AGREGADOS" or subcategoria == "EXTRAS"
+            subcategoria = str(
+                producto[4] or ""
+            ).strip().upper()
+
+            es_extra = (
+                categoria == "AGREGADOS"
+                or subcategoria == "EXTRAS"
+            )
 
             items.append(
                 {
                     "cant": cantidad,
                     "nombre": producto[1],
-                    "precio_unitario": precio,
+                    "precio_unitario": precio_unitario,
                     "subtotal": subtotal,
                     "obs": entrada.get("obs"),
                     "es_extra": es_extra,
                     "parent_detalle_id": None,
+                    "peso_gramos": peso_gramos,
+                    "precio_kg": precio_kg,
                 }
             )
 
         total = subtotal_productos + recargo
 
         self._venta_en_proceso = True
-        self.btn_confirmar_venta.config(state="disabled", text="Procesando...")
+        self.btn_confirmar_venta.config(
+            state="disabled",
+            text="Procesando...",
+        )
         self.config(cursor="watch")
 
         self.run_async(

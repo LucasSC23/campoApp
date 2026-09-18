@@ -52,6 +52,7 @@ class DBManager:
             "categoria",
             "subcategoria",
             "descripcion",
+            "tipo_venta",
         },
         "sesiones_caja": {
             "id",
@@ -80,6 +81,8 @@ class DBManager:
             "notas",
             "es_extra",
             "parent_detalle_id",
+            "peso_gramos",
+            "precio_kg",
         },
     }
 
@@ -393,11 +396,12 @@ class DBManager:
                     SELECT DISTINCT categoria
                     FROM productos
                     WHERE categoria IS NOT NULL
-                      AND TRIM(categoria) <> ''
+                    AND TRIM(categoria) <> ''
                     ORDER BY categoria;
                     """
                 )
                 return [fila[0] for fila in cur.fetchall()]
+
 
     def obtener_subcategorias_por_categoria(self, categoria):
         with self._connection() as conn:
@@ -407,79 +411,189 @@ class DBManager:
                     SELECT DISTINCT subcategoria
                     FROM productos
                     WHERE UPPER(categoria) = UPPER(%s)
-                      AND subcategoria IS NOT NULL
-                      AND TRIM(subcategoria) <> ''
+                    AND subcategoria IS NOT NULL
+                    AND TRIM(subcategoria) <> ''
                     ORDER BY subcategoria;
                     """,
                     (categoria,),
                 )
-                return [fila[0] for fila in cur.fetchall()]
 
-    def obtener_productos_filtrados(self, categoria="TODOS", subcategoria="TODOS"):
+                return [
+                    fila[0]
+                    for fila in cur.fetchall()
+                ]
+
+
+    def obtener_productos_filtrados(
+        self,
+        categoria="TODOS",
+        subcategoria="TODOS",
+    ):
         query = """
-            SELECT id, nombre, precio, categoria, subcategoria, descripcion
+            SELECT
+                id,
+                nombre,
+                precio,
+                categoria,
+                subcategoria,
+                descripcion,
+                tipo_venta
             FROM productos
             WHERE 1 = 1
         """
+
         params = []
 
-        categoria = str(categoria or "TODOS").strip()
-        subcategoria = str(subcategoria or "TODOS").strip()
+        categoria = str(
+            categoria or "TODOS"
+        ).strip()
+
+        subcategoria = str(
+            subcategoria or "TODOS"
+        ).strip()
 
         if categoria.upper() != "TODOS":
-            query += " AND UPPER(categoria) = UPPER(%s)"
+            query += """
+                AND UPPER(categoria) = UPPER(%s)
+            """
             params.append(categoria)
 
         if subcategoria.upper() != "TODOS":
-            query += " AND UPPER(subcategoria) = UPPER(%s)"
+            query += """
+                AND UPPER(subcategoria) = UPPER(%s)
+            """
             params.append(subcategoria)
 
-        query += " ORDER BY categoria, subcategoria NULLS LAST, nombre;"
+        query += """
+            ORDER BY
+                categoria,
+                subcategoria NULLS LAST,
+                nombre;
+        """
 
         with self._connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(query, tuple(params))
+                cur.execute(
+                    query,
+                    tuple(params),
+                )
+
                 return cur.fetchall()
 
-    def obtener_producto_por_id(self, producto_id):
+
+    def obtener_producto_por_id(
+        self,
+        producto_id,
+    ):
         with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, nombre, precio, categoria, subcategoria, descripcion
+                    SELECT
+                        id,
+                        nombre,
+                        precio,
+                        categoria,
+                        subcategoria,
+                        descripcion,
+                        tipo_venta
                     FROM productos
                     WHERE id = %s;
                     """,
                     (producto_id,),
                 )
+
                 return cur.fetchone()
 
+
     def agregar_producto(
-        self, nombre, precio, categoria, subcategoria="", descripcion=""
+        self,
+        nombre,
+        precio,
+        categoria,
+        subcategoria="",
+        descripcion="",
+        tipo_venta="unidad",
     ):
-        nombre = str(nombre or "").strip()
-        categoria = str(categoria or "").strip()
-        subcategoria = str(subcategoria or "").strip()
-        descripcion = str(descripcion or "").strip()
-        precio = self._decimal_no_negativo(precio, "precio")
+        nombre = str(
+            nombre or ""
+        ).strip()
+
+        categoria = str(
+            categoria or ""
+        ).strip()
+
+        subcategoria = str(
+            subcategoria or ""
+        ).strip()
+
+        descripcion = str(
+            descripcion or ""
+        ).strip()
+
+        tipo_venta = str(
+            tipo_venta or "unidad"
+        ).strip().lower()
+
+        precio = self._decimal_no_negativo(
+            precio,
+            "precio",
+        )
 
         if not nombre:
-            raise ValueError("El nombre del producto es obligatorio.")
+            raise ValueError(
+                "El nombre del producto es obligatorio."
+            )
+
         if not categoria:
-            raise ValueError("La categoría es obligatoria.")
+            raise ValueError(
+                "La categoría es obligatoria."
+            )
+
+        if tipo_venta not in (
+            "unidad",
+            "peso",
+        ):
+            raise ValueError(
+                "El tipo de venta debe ser "
+                "'unidad' o 'peso'."
+            )
 
         with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     INSERT INTO productos
-                        (nombre, precio, categoria, subcategoria, descripcion)
-                    VALUES (%s, %s, %s, %s, %s)
+                        (
+                            nombre,
+                            precio,
+                            categoria,
+                            subcategoria,
+                            descripcion,
+                            tipo_venta
+                        )
+                    VALUES (
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s,
+                        %s
+                    )
                     RETURNING id;
                     """,
-                    (nombre, precio, categoria, subcategoria, descripcion),
+                    (
+                        nombre,
+                        precio,
+                        categoria,
+                        subcategoria,
+                        descripcion,
+                        tipo_venta,
+                    ),
                 )
+
                 return cur.fetchone()[0]
+
 
     def actualizar_producto(
         self,
@@ -489,28 +603,64 @@ class DBManager:
         categoria,
         subcategoria="",
         descripcion="",
+        tipo_venta="unidad",
     ):
-        nombre = str(nombre or "").strip()
-        categoria = str(categoria or "").strip()
-        subcategoria = str(subcategoria or "").strip()
-        descripcion = str(descripcion or "").strip()
-        precio = self._decimal_no_negativo(precio, "precio")
+        nombre = str(
+            nombre or ""
+        ).strip()
+
+        categoria = str(
+            categoria or ""
+        ).strip()
+
+        subcategoria = str(
+            subcategoria or ""
+        ).strip()
+
+        descripcion = str(
+            descripcion or ""
+        ).strip()
+
+        tipo_venta = str(
+            tipo_venta or "unidad"
+        ).strip().lower()
+
+        precio = self._decimal_no_negativo(
+            precio,
+            "precio",
+        )
 
         if not nombre:
-            raise ValueError("El nombre del producto es obligatorio.")
+            raise ValueError(
+                "El nombre del producto es obligatorio."
+            )
+
         if not categoria:
-            raise ValueError("La categoría es obligatoria.")
+            raise ValueError(
+                "La categoría es obligatoria."
+            )
+
+        if tipo_venta not in (
+            "unidad",
+            "peso",
+        ):
+            raise ValueError(
+                "El tipo de venta debe ser "
+                "'unidad' o 'peso'."
+            )
 
         with self._connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
                     UPDATE productos
-                    SET nombre = %s,
+                    SET
+                        nombre = %s,
                         precio = %s,
                         categoria = %s,
                         subcategoria = %s,
-                        descripcion = %s
+                        descripcion = %s,
+                        tipo_venta = %s
                     WHERE id = %s;
                     """,
                     (
@@ -519,16 +669,31 @@ class DBManager:
                         categoria,
                         subcategoria,
                         descripcion,
+                        tipo_venta,
                         producto_id,
                     ),
                 )
-                if cur.rowcount != 1:
-                    raise ValueError(f"No existe el producto #{producto_id}.")
 
-    def eliminar_producto(self, producto_id):
-        producto = self.obtener_producto_por_id(producto_id)
+                if cur.rowcount != 1:
+                    raise ValueError(
+                        f"No existe el producto "
+                        f"#{producto_id}."
+                    )
+
+
+    def eliminar_producto(
+        self,
+        producto_id,
+    ):
+        producto = self.obtener_producto_por_id(
+            producto_id
+        )
+
         if not producto:
-            raise ValueError(f"No existe el producto #{producto_id}.")
+            raise ValueError(
+                f"No existe el producto "
+                f"#{producto_id}."
+            )
 
         nombre = producto[1]
 
@@ -539,20 +704,31 @@ class DBManager:
                     SELECT EXISTS (
                         SELECT 1
                         FROM detalle_ventas
-                        WHERE LOWER(TRIM(producto_nombre)) = LOWER(TRIM(%s))
+                        WHERE LOWER(
+                            TRIM(producto_nombre)
+                        ) = LOWER(
+                            TRIM(%s)
+                        )
                     );
                     """,
                     (nombre,),
                 )
+
                 vendido = cur.fetchone()[0]
 
                 if vendido:
                     raise ValueError(
-                        "El producto ya posee ventas históricas y no puede eliminarse."
+                        "El producto ya posee ventas "
+                        "históricas y no puede eliminarse."
                     )
 
-                cur.execute("DELETE FROM productos WHERE id = %s;", (producto_id,))
-
+                cur.execute(
+                    """
+                    DELETE FROM productos
+                    WHERE id = %s;
+                    """,
+                    (producto_id,),
+                )
     # ==================================================================
     # 6. VENTAS
     # ==================================================================
@@ -568,49 +744,144 @@ class DBManager:
         metodo_pago = self._validar_metodo_pago(metodo_pago)
         tipo_entrega = self._validar_tipo_entrega(tipo_entrega)
         total = self._decimal_no_negativo(total, "total")
-        recargo = self._decimal_no_negativo(recargo_delivery, "recargo delivery")
+        recargo = self._decimal_no_negativo(
+            recargo_delivery,
+            "recargo delivery"
+        )
 
         if not items:
-            raise ValueError("La venta debe contener al menos un producto.")
+            raise ValueError(
+                "La venta debe contener al menos un producto."
+            )
 
         items_normalizados = []
         total_items = Decimal("0")
 
         for posicion, item in enumerate(items, start=1):
+
+            # --------------------------------------------------------------
+            # Cantidad
+            # --------------------------------------------------------------
             try:
                 cantidad = int(item["cant"])
             except (KeyError, TypeError, ValueError) as exc:
-                raise ValueError(f"Cantidad inválida en el ítem {posicion}.") from exc
+                raise ValueError(
+                    f"Cantidad inválida en el ítem {posicion}."
+                ) from exc
 
             if cantidad <= 0:
                 raise ValueError(
-                    f"La cantidad del ítem {posicion} debe ser mayor que cero."
+                    f"La cantidad del ítem {posicion} "
+                    "debe ser mayor que cero."
                 )
 
-            nombre = str(item.get("nombre") or "").strip()
-            if not nombre:
-                raise ValueError(f"Falta el nombre del producto en el ítem {posicion}.")
+            # --------------------------------------------------------------
+            # Nombre
+            # --------------------------------------------------------------
+            nombre = str(
+                item.get("nombre") or ""
+            ).strip()
 
+            if not nombre:
+                raise ValueError(
+                    f"Falta el nombre del producto "
+                    f"en el ítem {posicion}."
+                )
+
+            # --------------------------------------------------------------
+            # Subtotal
+            # --------------------------------------------------------------
             subtotal = self._decimal_no_negativo(
-                item.get("subtotal"), f"subtotal del ítem {posicion}"
+                item.get("subtotal"),
+                f"subtotal del ítem {posicion}",
             )
 
+            # --------------------------------------------------------------
+            # Precio unitario
+            # --------------------------------------------------------------
             if item.get("precio_unitario") is not None:
                 precio_unitario = self._decimal_no_negativo(
-                    item["precio_unitario"], f"precio unitario del ítem {posicion}"
+                    item["precio_unitario"],
+                    f"precio unitario del ítem {posicion}",
                 )
             else:
                 precio_unitario = subtotal / Decimal(cantidad)
 
+            # --------------------------------------------------------------
+            # PRODUCTOS VENDIDOS POR PESO
+            # --------------------------------------------------------------
+            peso_gramos = item.get("peso_gramos")
+            precio_kg = item.get("precio_kg")
+
+            # Si ninguno está presente, es un producto normal.
+            if peso_gramos is None and precio_kg is None:
+                peso_gramos = None
+                precio_kg = None
+
+            else:
+                # Si viene uno, tienen que venir los dos.
+                if peso_gramos is None or precio_kg is None:
+                    raise ValueError(
+                        f"El ítem {posicion} tiene información "
+                        "de peso incompleta."
+                    )
+
+                peso_gramos = self._decimal(
+                    peso_gramos,
+                    f"peso en gramos del ítem {posicion}",
+                )
+
+                precio_kg = self._decimal_no_negativo(
+                    precio_kg,
+                    f"precio por kilo del ítem {posicion}",
+                )
+
+                if peso_gramos <= 0:
+                    raise ValueError(
+                        f"El peso del ítem {posicion} "
+                        "debe ser mayor que cero."
+                    )
+
+                # Comprobamos que el subtotal enviado por la GUI
+                # coincida con peso × precio por kilo.
+                subtotal_calculado = (
+                    precio_kg
+                    * peso_gramos
+                    / Decimal("1000")
+                )
+
+                if subtotal != subtotal_calculado:
+                    raise ValueError(
+                        f"El subtotal del ítem {posicion} "
+                        "no coincide con su peso y precio por kilo. "
+                        f"Esperado: {subtotal_calculado}; "
+                        f"recibido: {subtotal}."
+                    )
+
+            # --------------------------------------------------------------
+            # Notas / extras
+            # --------------------------------------------------------------
             notas = item.get("obs")
+
             if notas is None:
                 notas = item.get("notas")
-            notas = str(notas).strip() if notas else None
 
-            es_extra = bool(item.get("es_extra", False))
-            parent_detalle_id = item.get("parent_detalle_id")
+            notas = (
+                str(notas).strip()
+                if notas
+                else None
+            )
+
+            es_extra = bool(
+                item.get("es_extra", False)
+            )
+
+            parent_detalle_id = item.get(
+                "parent_detalle_id"
+            )
 
             total_items += subtotal
+
             items_normalizados.append(
                 {
                     "cantidad": cantidad,
@@ -620,18 +891,30 @@ class DBManager:
                     "notas": notas,
                     "es_extra": es_extra,
                     "parent_detalle_id": parent_detalle_id,
+                    "peso_gramos": peso_gramos,
+                    "precio_kg": precio_kg,
                 }
             )
 
+        # --------------------------------------------------------------
+        # Verificar total
+        # --------------------------------------------------------------
         esperado = total_items + recargo
+
         if total != esperado:
             raise ValueError(
-                "El total recibido no coincide con los detalles de la venta. "
-                f"Detalles + recargo = {esperado}; total recibido = {total}."
+                "El total recibido no coincide con "
+                "los detalles de la venta. "
+                f"Detalles + recargo = {esperado}; "
+                f"total recibido = {total}."
             )
 
+        # --------------------------------------------------------------
+        # Guardar venta
+        # --------------------------------------------------------------
         with self._connection() as conn:
             with conn.cursor() as cur:
+
                 cur.execute(
                     """
                     SELECT id
@@ -642,11 +925,13 @@ class DBManager:
                     FOR UPDATE;
                     """
                 )
+
                 fila_sesion = cur.fetchone()
 
                 if not fila_sesion:
                     raise CajaNoAbiertaError(
-                        "No puede registrar una venta porque no hay una caja abierta."
+                        "No puede registrar una venta porque "
+                        "no hay una caja abierta."
                     )
 
                 sesion_id = fila_sesion[0]
@@ -654,22 +939,69 @@ class DBManager:
                 cur.execute(
                     """
                     INSERT INTO ventas
-                        (sesion_id, fecha_hora, monto_total, metodo_pago,
-                         estado, tipo_entrega, recargo_delivery)
-                    VALUES (%s, NOW(), %s, %s, 'COMPLETADA', %s, %s)
+                        (
+                            sesion_id,
+                            fecha_hora,
+                            monto_total,
+                            metodo_pago,
+                            estado,
+                            tipo_entrega,
+                            recargo_delivery
+                        )
+                    VALUES (
+                        %s,
+                        NOW(),
+                        %s,
+                        %s,
+                        'COMPLETADA',
+                        %s,
+                        %s
+                    )
                     RETURNING id;
                     """,
-                    (sesion_id, total, metodo_pago, tipo_entrega, recargo),
+                    (
+                        sesion_id,
+                        total,
+                        metodo_pago,
+                        tipo_entrega,
+                        recargo,
+                    ),
                 )
+
                 venta_id = cur.fetchone()[0]
 
+                # ----------------------------------------------------------
+                # Guardar detalles
+                # ----------------------------------------------------------
                 for item in items_normalizados:
+
                     cur.execute(
                         """
                         INSERT INTO detalle_ventas
-                            (venta_id, producto_nombre, cantidad, precio_unitario,
-                             subtotal, notas, es_extra, parent_detalle_id)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+                            (
+                                venta_id,
+                                producto_nombre,
+                                cantidad,
+                                precio_unitario,
+                                subtotal,
+                                notas,
+                                es_extra,
+                                parent_detalle_id,
+                                peso_gramos,
+                                precio_kg
+                            )
+                        VALUES (
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s,
+                            %s
+                        );
                         """,
                         (
                             venta_id,
@@ -680,49 +1012,84 @@ class DBManager:
                             item["notas"],
                             item["es_extra"],
                             item["parent_detalle_id"],
+                            item["peso_gramos"],
+                            item["precio_kg"],
                         ),
                     )
 
         return venta_id
-
     def obtener_ventas_sesion_activa(self):
         with self._connection() as conn:
             with conn.cursor() as cur:
+
+                # ----------------------------------------------------------
+                # Obtener la sesión de caja actualmente abierta
+                # ----------------------------------------------------------
                 cur.execute(
                     """
-                    SELECT s.id
-                    FROM sesiones_caja s
-                    WHERE s.estado = 'ABIERTA'
-                    ORDER BY s.fecha_apertura DESC, s.id DESC
+                    SELECT id
+                    FROM sesiones_caja
+                    WHERE estado = 'ABIERTA'
+                    ORDER BY fecha_apertura DESC, id DESC
                     LIMIT 1;
                     """
                 )
+
                 fila_sesion = cur.fetchone()
+
                 if not fila_sesion:
                     return []
 
                 sesion_id = fila_sesion[0]
 
+                # ----------------------------------------------------------
+                # Obtener las ventas completadas de la sesión
+                # ----------------------------------------------------------
                 cur.execute(
                     """
-                    SELECT id, TO_CHAR(fecha_hora, 'HH24:MI'), monto_total, metodo_pago
+                    SELECT
+                        id,
+                        TO_CHAR(fecha_hora, 'HH24:MI'),
+                        monto_total,
+                        metodo_pago
                     FROM ventas
                     WHERE sesion_id = %s
-                      AND estado = 'COMPLETADA'
+                    AND estado = 'COMPLETADA'
                     ORDER BY id DESC;
                     """,
                     (sesion_id,),
                 )
+
                 ventas = cur.fetchall()
 
                 if not ventas:
                     return []
 
-                venta_ids = [fila[0] for fila in ventas]
+                # ----------------------------------------------------------
+                # Obtener los IDs de las ventas encontradas
+                # ----------------------------------------------------------
+                venta_ids = [
+                    fila[0]
+                    for fila in ventas
+                ]
+
+                # ----------------------------------------------------------
+                # Obtener los detalles de todas las ventas
+                # Incluye ahora peso_gramos y precio_kg
+                # ----------------------------------------------------------
                 cur.execute(
                     """
-                    SELECT venta_id, cantidad, producto_nombre, subtotal, notas,
-                           precio_unitario, es_extra, parent_detalle_id
+                    SELECT
+                        venta_id,
+                        cantidad,
+                        producto_nombre,
+                        subtotal,
+                        notas,
+                        precio_unitario,
+                        es_extra,
+                        parent_detalle_id,
+                        peso_gramos,
+                        precio_kg
                     FROM detalle_ventas
                     WHERE venta_id = ANY(%s)
                     ORDER BY venta_id, id;
@@ -731,8 +1098,15 @@ class DBManager:
                 )
 
                 detalles_por_venta = {}
+
                 for fila in cur.fetchall():
-                    detalles_por_venta.setdefault(fila[0], []).append(
+
+                    venta_id = fila[0]
+
+                    detalles_por_venta.setdefault(
+                        venta_id,
+                        [],
+                    ).append(
                         {
                             "cant": fila[1],
                             "nombre": fila[2],
@@ -741,44 +1115,98 @@ class DBManager:
                             "precio_unitario": fila[5],
                             "es_extra": fila[6],
                             "parent_detalle_id": fila[7],
+                            "peso_gramos": fila[8],
+                            "precio_kg": fila[9],
                         }
                     )
 
+        # ------------------------------------------------------------------
+        # Mantener el mismo formato que ya esperaba la GUI:
+        #
+        # (
+        #     venta_id,
+        #     hora,
+        #     monto,
+        #     metodo_pago,
+        #     detalles
+        # )
+        # ------------------------------------------------------------------
         return [
-            (venta_id, hora, monto, metodo, detalles_por_venta.get(venta_id, []))
+            (
+                venta_id,
+                hora,
+                monto,
+                metodo,
+                detalles_por_venta.get(
+                    venta_id,
+                    [],
+                ),
+            )
             for venta_id, hora, monto, metodo in ventas
         ]
-
     def obtener_detalle_venta(self, venta_id):
         with self._connection() as conn:
             with conn.cursor() as cur:
+
+                # ----------------------------------------------------------
+                # Obtener datos generales de la venta
+                # ----------------------------------------------------------
                 cur.execute(
                     """
-                    SELECT id, sesion_id,
-                           TO_CHAR(fecha_hora, 'YYYY-MM-DD HH24:MI:SS'),
-                           monto_total, metodo_pago, estado,
-                           tipo_entrega, recargo_delivery
+                    SELECT
+                        id,
+                        sesion_id,
+                        TO_CHAR(
+                            fecha_hora,
+                            'YYYY-MM-DD HH24:MI:SS'
+                        ),
+                        monto_total,
+                        metodo_pago,
+                        estado,
+                        tipo_entrega,
+                        recargo_delivery
                     FROM ventas
                     WHERE id = %s;
                     """,
                     (venta_id,),
                 )
+
                 venta = cur.fetchone()
+
                 if not venta:
                     return None
 
+                # ----------------------------------------------------------
+                # Obtener productos/detalles de la venta
+                #
+                # Incluye:
+                # - peso_gramos
+                # - precio_kg
+                # ----------------------------------------------------------
                 cur.execute(
                     """
-                    SELECT cantidad, producto_nombre, precio_unitario,
-                           subtotal, notas, es_extra, parent_detalle_id
+                    SELECT
+                        cantidad,
+                        producto_nombre,
+                        precio_unitario,
+                        subtotal,
+                        notas,
+                        es_extra,
+                        parent_detalle_id,
+                        peso_gramos,
+                        precio_kg
                     FROM detalle_ventas
                     WHERE venta_id = %s
                     ORDER BY id;
                     """,
                     (venta_id,),
                 )
+
                 detalles = cur.fetchall()
 
+        # ------------------------------------------------------------------
+        # Devolver venta en formato diccionario
+        # ------------------------------------------------------------------
         return {
             "id": venta[0],
             "sesion_id": venta[1],
@@ -788,6 +1216,7 @@ class DBManager:
             "estado": venta[5],
             "tipo_entrega": venta[6],
             "recargo_delivery": venta[7],
+
             "items": [
                 {
                     "cant": detalle[0],
@@ -797,11 +1226,12 @@ class DBManager:
                     "obs": detalle[4],
                     "es_extra": detalle[5],
                     "parent_detalle_id": detalle[6],
+                    "peso_gramos": detalle[7],
+                    "precio_kg": detalle[8],
                 }
                 for detalle in detalles
             ],
         }
-
     def obtener_historial_ventas(self, fecha_inicio=None, fecha_fin=None):
         query = """
             SELECT id, sesion_id, fecha_hora, monto_total, metodo_pago,
@@ -1039,6 +1469,91 @@ class DBManager:
                 "efectivo_esperado": f[11],
             }
             for f in filas
+        ]
+    def obtener_resumen_semanal(self, limite_semanas=52):
+        """Totales semanales por medio de pago, de lunes a domingo."""
+
+        limite_semanas = max(
+            1,
+            min(int(limite_semanas), 260)
+        )
+
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        DATE_TRUNC(
+                            'week',
+                            fecha_hora
+                        )::date AS semana_inicio,
+
+                        (
+                            DATE_TRUNC(
+                                'week',
+                                fecha_hora
+                            )::date + 6
+                        ) AS semana_fin,
+
+                        COUNT(*) AS cantidad_ventas,
+
+                        COALESCE(
+                            SUM(monto_total) FILTER (
+                                WHERE metodo_pago = 'Efectivo'
+                            ),
+                            0
+                        ) AS efectivo,
+
+                        COALESCE(
+                            SUM(monto_total) FILTER (
+                                WHERE metodo_pago = 'POS / Tarjeta'
+                            ),
+                            0
+                        ) AS pos,
+
+                        COALESCE(
+                            SUM(monto_total) FILTER (
+                                WHERE metodo_pago = 'Transferencia'
+                            ),
+                            0
+                        ) AS transferencia,
+
+                        COALESCE(
+                            SUM(monto_total),
+                            0
+                        ) AS total
+
+                    FROM ventas
+
+                    WHERE estado = 'COMPLETADA'
+
+                    GROUP BY
+                        DATE_TRUNC(
+                            'week',
+                            fecha_hora
+                        )
+
+                    ORDER BY
+                        semana_inicio DESC
+
+                    LIMIT %s;
+                    """,
+                    (limite_semanas,),
+                )
+
+                filas = cur.fetchall()
+
+        return [
+            {
+                "semana_inicio": fila[0],
+                "semana_fin": fila[1],
+                "cantidad_ventas": fila[2],
+                "efectivo": fila[3],
+                "pos": fila[4],
+                "transferencia": fila[5],
+                "total": fila[6],
+            }
+            for fila in filas
         ]
 
     def obtener_resumen_mensual(self, limite_meses=24):
