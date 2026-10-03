@@ -24,10 +24,10 @@ if (-not (Test-Path $ico)) {
 }
 
 $candidatos = @(
-    "$env:ProgramFiles(x86)\Inno Setup 6\ISCC.exe",
+    "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
+    "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",
     "$env:ProgramFiles\Inno Setup 6\ISCC.exe"
 )
-
 $iscc = $null
 
 foreach ($ruta in $candidatos) {
