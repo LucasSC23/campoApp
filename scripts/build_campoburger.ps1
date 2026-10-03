@@ -6,17 +6,29 @@ $ErrorActionPreference = "Stop"
 # BUILD DEL CLIENTE WINDOWS
 # ================================================================
 
+
+# Carpeta donde vive este script:
+# POS_Hamburgueseria\scripts
+$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+
+# Carpeta principal del proyecto:
+# POS_Hamburgueseria
+$ProjectDir = Split-Path -Parent $ScriptDir
+
+Set-Location $ProjectDir
+
+
 Write-Host ""
 Write-Host "=== CAMPO BURGER POS - BUILD WINDOWS ===" -ForegroundColor Yellow
 Write-Host ""
 
 
 # ================================================================
-# VERIFICAR QUE ESTAMOS EN LA RAIZ DEL PROYECTO
+# VALIDACIONES
 # ================================================================
 
 if (-not (Test-Path ".\main.py")) {
-    throw "Ejecuta este script desde la carpeta principal del proyecto."
+    throw "No se encontro main.py en la raiz del proyecto."
 }
 
 if (-not (Test-Path ".\CampoBurgerPOS.spec")) {
@@ -32,7 +44,7 @@ if (-not (Test-Path ".\campo_burger.ico")) {
 # DEPENDENCIAS DE EMPAQUETADO
 # ================================================================
 
-Write-Host "Verificando PyInstaller..." -ForegroundColor Cyan
+Write-Host "Verificando herramientas de empaquetado..." -ForegroundColor Cyan
 
 python -m pip install --upgrade pyinstaller pywin32
 
@@ -54,7 +66,7 @@ if (Test-Path ".\dist") {
 
 
 # ================================================================
-# GENERAR EJECUTABLE
+# GENERAR CLIENTE
 # ================================================================
 
 Write-Host ""
@@ -70,35 +82,51 @@ python -m PyInstaller `
 # VERIFICAR RESULTADO
 # ================================================================
 
-$exe = ".\dist\CampoBurgerPOS\CampoBurgerPOS.exe"
+$exe = Join-Path `
+    $ProjectDir `
+    "dist\CampoBurgerPOS\CampoBurgerPOS.exe"
 
 if (-not (Test-Path $exe)) {
-    throw "PyInstaller termino, pero no se encontro CampoBurgerPOS.exe."
+    throw "PyInstaller termino, pero CampoBurgerPOS.exe no fue encontrado."
 }
 
 
 # ================================================================
-# IMPORTANTE
-# ================================================================
-#
-# NO copiamos .env al cliente.
-#
-# El cliente POS no debe contener:
-#
-# DB_HOST
-# DB_USER
-# DB_PASSWORD
-#
-# Las credenciales pertenecen exclusivamente al backend.
+# VERIFICACION DE SEGURIDAD
 # ================================================================
 
+$envCliente = Join-Path `
+    $ProjectDir `
+    "dist\CampoBurgerPOS\.env"
+
+if (Test-Path $envCliente) {
+
+    throw @"
+ERROR DE SEGURIDAD:
+
+Se encontro un archivo .env dentro del cliente compilado.
+
+El build fue detenido.
+"@
+}
+
+
+# ================================================================
+# RESULTADO
+# ================================================================
 
 Write-Host ""
 Write-Host "BUILD COMPLETADO CORRECTAMENTE" -ForegroundColor Green
 Write-Host ""
+
 Write-Host "Ejecutable:"
 Write-Host "  $exe"
+
+Write-Host ""
+Write-Host "Seguridad:"
+Write-Host "  .env NO incluido en el cliente." -ForegroundColor Green
+
 Write-Host ""
 Write-Host "Siguiente paso:"
-Write-Host "  Ejecutar crear_instalador.ps1"
+Write-Host "  .\scripts\crear_instalador.ps1"
 Write-Host ""

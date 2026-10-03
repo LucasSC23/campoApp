@@ -5,8 +5,10 @@
 
 
 ; ================================================================
-; CONFIGURACION GENERAL DEL INSTALADOR
+; CAMPO BURGER POS
+; INSTALADOR WINDOWS
 ; ================================================================
+
 
 [Setup]
 
@@ -21,10 +23,13 @@ DefaultGroupName={#MyAppName}
 
 DisableProgramGroupPage=yes
 
-OutputDir=installer
+; El .iss ya se encuentra dentro de installer,
+; por eso el resultado se genera en esta misma carpeta.
+OutputDir=.
+
 OutputBaseFilename=CampoBurgerPOS_Setup
 
-SetupIconFile=campo_burger.ico
+SetupIconFile=..\campo_burger.ico
 
 UninstallDisplayIcon={app}\{#MyAppExeName}
 
@@ -42,12 +47,12 @@ CloseApplications=yes
 
 
 ; ================================================================
-; ARCHIVOS DEL PROGRAMA
+; ARCHIVOS DEL CLIENTE
 ; ================================================================
 
 [Files]
 
-Source: "dist\CampoBurgerPOS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "..\dist\CampoBurgerPOS\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 
 ; ================================================================
@@ -62,7 +67,7 @@ Name: "{autoprograms}\Campo Burger POS"; Filename: "{app}\{#MyAppExeName}"; Work
 
 
 ; ================================================================
-; EJECUTAR AL FINALIZAR INSTALACION
+; EJECUTAR DESPUES DE INSTALAR
 ; ================================================================
 
 [Run]
