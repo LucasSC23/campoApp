@@ -1,13 +1,156 @@
+import sys
+import ctypes
 import tkinter as tk
 from decimal import Decimal, InvalidOperation
-from tkinter import messagebox, ttk
+from tkinter import ttk
+
+from ui_dialogos import mostrar_error
 
 
 BG = "#141722"
+HEADER_BG = "#11141d"
 PANEL = "#1c2030"
 TEXT = "#ffffff"
 MUTED = "#a0a5b5"
 ORANGE = "#ff8c2b"
+
+
+
+def _colorref(hex_color):
+    """Convierte #RRGGBB al COLORREF que usa Windows (0x00BBGGRR)."""
+    valor = hex_color.lstrip("#")
+    r = int(valor[0:2], 16)
+    g = int(valor[2:4], 16)
+    b = int(valor[4:6], 16)
+    return r | (g << 8) | (b << 16)
+
+
+def aplicar_barra_titulo_campo_burger(ventana):
+    """
+    Colorea la barra nativa de Windows para integrarla con Campo Burger POS.
+
+    Mantiene minimizar, maximizar, mover, redimensionar y cerrar nativos.
+    En versiones de Windows que no soportan color exacto, intenta al menos
+    activar el modo oscuro de la barra de título.
+    """
+    if sys.platform != "win32":
+        return
+
+    try:
+        ventana.update_idletasks()
+
+        hwnd_cliente = ventana.winfo_id()
+        hwnd = ctypes.windll.user32.GetParent(hwnd_cliente)
+        if not hwnd:
+            hwnd = hwnd_cliente
+
+        dwm = ctypes.windll.dwmapi
+
+        # Modo oscuro de la barra. El atributo cambió entre builds de Windows.
+        oscuro = ctypes.c_int(1)
+        resultado = dwm.DwmSetWindowAttribute(
+            hwnd,
+            20,  # DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 10/11 recientes)
+            ctypes.byref(oscuro),
+            ctypes.sizeof(oscuro),
+        )
+        if resultado != 0:
+            dwm.DwmSetWindowAttribute(
+                hwnd,
+                19,  # fallback para algunas builds anteriores
+                ctypes.byref(oscuro),
+                ctypes.sizeof(oscuro),
+            )
+
+        # Windows 11 permite además definir los colores exactos.
+        atributos_colores = (
+            (35, HEADER_BG),  # DWMWA_CAPTION_COLOR
+            (36, TEXT),       # DWMWA_TEXT_COLOR
+            (34, HEADER_BG),  # DWMWA_BORDER_COLOR
+        )
+
+        for atributo, color_hex in atributos_colores:
+            color = ctypes.c_int(_colorref(color_hex))
+            dwm.DwmSetWindowAttribute(
+                hwnd,
+                atributo,
+                ctypes.byref(color),
+                ctypes.sizeof(color),
+            )
+
+    except Exception:
+        # La estética nunca debe impedir que el POS funcione.
+        pass
+
+
+def configurar_barra_titulo_campo_burger(ventana):
+    """Aplica/reaplica el estilo cuando Windows muestra o restaura la ventana."""
+    ventana.after(
+        25,
+        lambda: aplicar_barra_titulo_campo_burger(ventana),
+    )
+
+    ventana.bind(
+        "<Map>",
+        lambda _event: ventana.after(
+            25,
+            lambda: aplicar_barra_titulo_campo_burger(ventana),
+        ),
+        add="+",
+    )
+
+
+
+def configurar_estilo_scrollbars(style):
+    """Aplica el estilo visual Campo Burger a barras verticales y horizontales."""
+
+    style.configure(
+        "Campo.Vertical.TScrollbar",
+        troughcolor=PANEL,
+        background="#374151",
+        darkcolor="#374151",
+        lightcolor="#374151",
+        bordercolor=PANEL,
+        arrowcolor=TEXT,
+        relief="flat",
+        gripcount=0,
+    )
+
+    style.map(
+        "Campo.Vertical.TScrollbar",
+        background=[
+            ("active", "#4b5563"),
+            ("pressed", ORANGE),
+        ],
+        arrowcolor=[
+            ("active", TEXT),
+            ("pressed", TEXT),
+        ],
+    )
+
+    style.configure(
+        "Campo.Horizontal.TScrollbar",
+        troughcolor=PANEL,
+        background="#374151",
+        darkcolor="#374151",
+        lightcolor="#374151",
+        bordercolor=PANEL,
+        arrowcolor=TEXT,
+        relief="flat",
+        gripcount=0,
+    )
+
+    style.map(
+        "Campo.Horizontal.TScrollbar",
+        background=[
+            ("active", "#4b5563"),
+            ("pressed", ORANGE),
+        ],
+        arrowcolor=[
+            ("active", TEXT),
+            ("pressed", TEXT),
+        ],
+    )
 
 
 def fmt_gs(monto):
@@ -30,6 +173,7 @@ class VentanaReportes(tk.Toplevel):
         self.minsize(900, 520)
         self.configure(bg=BG)
         self.transient(parent)
+        configurar_barra_titulo_campo_burger(self)
 
         self._configurar_estilo()
         self._crear_interfaz()
@@ -41,6 +185,8 @@ class VentanaReportes(tk.Toplevel):
             style.theme_use("clam")
         except tk.TclError:
             pass
+
+        configurar_estilo_scrollbars(style)
 
         style.configure(
             "Campo.Treeview",
@@ -185,11 +331,13 @@ class VentanaReportes(tk.Toplevel):
             frame,
             orient="vertical",
             command=self.tree_sesiones.yview,
+            style="Campo.Vertical.TScrollbar",
         )
         scroll_x = ttk.Scrollbar(
             frame,
             orient="horizontal",
             command=self.tree_sesiones.xview,
+            style="Campo.Horizontal.TScrollbar",
         )
         self.tree_sesiones.configure(
             yscrollcommand=scroll_y.set,
@@ -231,11 +379,20 @@ class VentanaReportes(tk.Toplevel):
             "total": "Total semanal",
         }
 
+        anchos = {
+            "semana": 190,
+            "tickets": 90,
+            "efectivo": 150,
+            "pos": 150,
+            "transferencia": 150,
+            "total": 160,
+        }
+
         for col in columnas:
             self.tree_semanal.heading(col, text=encabezados[col])
             self.tree_semanal.column(
                 col,
-                width=185 if col == "semana" else (100 if col == "tickets" else 160),
+                width=anchos[col],
                 anchor="center",
                 stretch=True,
             )
@@ -244,6 +401,7 @@ class VentanaReportes(tk.Toplevel):
             frame,
             orient="vertical",
             command=self.tree_semanal.yview,
+            style="Campo.Vertical.TScrollbar",
         )
         self.tree_semanal.configure(yscrollcommand=scroll_y.set)
 
@@ -294,6 +452,7 @@ class VentanaReportes(tk.Toplevel):
             frame,
             orient="vertical",
             command=self.tree_mensual.yview,
+            style="Campo.Vertical.TScrollbar",
         )
         self.tree_mensual.configure(yscrollcommand=scroll_y.set)
 
@@ -327,12 +486,20 @@ class VentanaReportes(tk.Toplevel):
     def _mostrar_error(self, mensaje):
         if not self.winfo_exists():
             return
-        self.btn_actualizar.config(state="normal", text="↻ Actualizar")
+
+        self.btn_actualizar.config(
+            state="normal",
+            text="↻ Actualizar",
+        )
         self.lbl_estado.config(text="Error")
-        messagebox.showerror(
+
+        mostrar_error(
+            self,
             "Reportes",
-            f"No se pudieron cargar los reportes:\n{mensaje}",
-            parent=self,
+            (
+                "No se pudieron cargar los reportes.\n\n"
+                f"{mensaje}"
+            ),
         )
 
     def _aplicar_reportes(self, datos):
@@ -341,6 +508,9 @@ class VentanaReportes(tk.Toplevel):
 
         sesiones, semanal, mensual = datos
 
+        # --------------------------------------------------------------
+        # SESIONES
+        # --------------------------------------------------------------
         for item in self.tree_sesiones.get_children():
             self.tree_sesiones.delete(item)
 
@@ -375,6 +545,9 @@ class VentanaReportes(tk.Toplevel):
                 ),
             )
 
+        # --------------------------------------------------------------
+        # SEMANAL
+        # --------------------------------------------------------------
         for item in self.tree_semanal.get_children():
             self.tree_semanal.delete(item)
 
@@ -389,7 +562,12 @@ class VentanaReportes(tk.Toplevel):
                 if fila["semana_fin"]
                 else ""
             )
-            semana = f"{inicio} - {fin}" if inicio and fin else ""
+
+            semana = (
+                f"{inicio} - {fin}"
+                if inicio and fin
+                else ""
+            )
 
             self.tree_semanal.insert(
                 "",
@@ -404,11 +582,19 @@ class VentanaReportes(tk.Toplevel):
                 ),
             )
 
+        # --------------------------------------------------------------
+        # MENSUAL
+        # --------------------------------------------------------------
         for item in self.tree_mensual.get_children():
             self.tree_mensual.delete(item)
 
         for fila in mensual:
-            mes = fila["mes"].strftime("%m/%Y") if fila["mes"] else ""
+            mes = (
+                fila["mes"].strftime("%m/%Y")
+                if fila["mes"]
+                else ""
+            )
+
             self.tree_mensual.insert(
                 "",
                 "end",
@@ -422,7 +608,11 @@ class VentanaReportes(tk.Toplevel):
                 ),
             )
 
-        self.btn_actualizar.config(state="normal", text="↻ Actualizar")
+        self.btn_actualizar.config(
+            state="normal",
+            text="↻ Actualizar",
+        )
+
         self.lbl_estado.config(
             text=(
                 f"{len(sesiones)} sesiones · "

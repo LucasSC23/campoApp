@@ -1,10 +1,19 @@
+import sys
+import ctypes
 import threading
 import tkinter as tk
 from decimal import Decimal, InvalidOperation
-from tkinter import messagebox, ttk
+from tkinter import ttk
+
+from ui_dialogos import (
+    confirmar,
+    mostrar_error,
+    mostrar_exito,
+)
 
 
 BG = "#141722"
+HEADER_BG = "#11141d"
 PANEL = "#1c2030"
 PANEL_2 = "#252a3e"
 TEXT = "#ffffff"
@@ -12,6 +21,161 @@ MUTED = "#a0a5b5"
 GREEN = "#10b981"
 RED = "#ef4444"
 BLUE = "#60a5fa"
+ORANGE = "#ff8c2b"
+
+
+
+def _colorref(hex_color):
+    """Convierte #RRGGBB al COLORREF que usa Windows (0x00BBGGRR)."""
+    valor = hex_color.lstrip("#")
+    r = int(valor[0:2], 16)
+    g = int(valor[2:4], 16)
+    b = int(valor[4:6], 16)
+    return r | (g << 8) | (b << 16)
+
+
+def aplicar_barra_titulo_campo_burger(ventana):
+    """
+    Colorea la barra nativa de Windows para integrarla con Campo Burger POS.
+
+    Mantiene minimizar, maximizar, mover, redimensionar y cerrar nativos.
+    En versiones de Windows que no soportan color exacto, intenta al menos
+    activar el modo oscuro de la barra de título.
+    """
+    if sys.platform != "win32":
+        return
+
+    try:
+        ventana.update_idletasks()
+
+        hwnd_cliente = ventana.winfo_id()
+        hwnd = ctypes.windll.user32.GetParent(hwnd_cliente)
+        if not hwnd:
+            hwnd = hwnd_cliente
+
+        dwm = ctypes.windll.dwmapi
+
+        # Modo oscuro de la barra. El atributo cambió entre builds de Windows.
+        oscuro = ctypes.c_int(1)
+        resultado = dwm.DwmSetWindowAttribute(
+            hwnd,
+            20,  # DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 10/11 recientes)
+            ctypes.byref(oscuro),
+            ctypes.sizeof(oscuro),
+        )
+        if resultado != 0:
+            dwm.DwmSetWindowAttribute(
+                hwnd,
+                19,  # fallback para algunas builds anteriores
+                ctypes.byref(oscuro),
+                ctypes.sizeof(oscuro),
+            )
+
+        # Windows 11 permite además definir los colores exactos.
+        atributos_colores = (
+            (35, HEADER_BG),  # DWMWA_CAPTION_COLOR
+            (36, TEXT),       # DWMWA_TEXT_COLOR
+            (34, HEADER_BG),  # DWMWA_BORDER_COLOR
+        )
+
+        for atributo, color_hex in atributos_colores:
+            color = ctypes.c_int(_colorref(color_hex))
+            dwm.DwmSetWindowAttribute(
+                hwnd,
+                atributo,
+                ctypes.byref(color),
+                ctypes.sizeof(color),
+            )
+
+    except Exception:
+        # La estética nunca debe impedir que el POS funcione.
+        pass
+
+
+def configurar_barra_titulo_campo_burger(ventana):
+    """Aplica/reaplica el estilo cuando Windows muestra o restaura la ventana."""
+    ventana.after(
+        25,
+        lambda: aplicar_barra_titulo_campo_burger(ventana),
+    )
+
+    ventana.bind(
+        "<Map>",
+        lambda _event: ventana.after(
+            25,
+            lambda: aplicar_barra_titulo_campo_burger(ventana),
+        ),
+        add="+",
+    )
+
+
+
+def configurar_estilo_scrollbars(style):
+    """Aplica el estilo Campo Burger a las barras de desplazamiento."""
+
+    style.configure(
+        "Campo.Vertical.TScrollbar",
+        troughcolor=PANEL,
+        background="#374151",
+        darkcolor="#374151",
+        lightcolor="#374151",
+        bordercolor=PANEL,
+        arrowcolor=TEXT,
+        relief="flat",
+        gripcount=0,
+        arrowsize=12,
+    )
+
+    style.map(
+        "Campo.Vertical.TScrollbar",
+        background=[
+            ("active", "#4b5563"),
+            ("pressed", ORANGE),
+        ],
+        arrowcolor=[
+            ("active", TEXT),
+            ("pressed", TEXT),
+        ],
+    )
+
+    style.configure(
+        "Campo.Horizontal.TScrollbar",
+        troughcolor=PANEL,
+        background="#374151",
+        darkcolor="#374151",
+        lightcolor="#374151",
+        bordercolor=PANEL,
+        arrowcolor=TEXT,
+        relief="flat",
+        gripcount=0,
+        arrowsize=12,
+    )
+
+    style.map(
+        "Campo.Horizontal.TScrollbar",
+        background=[
+            ("active", "#4b5563"),
+            ("pressed", ORANGE),
+        ],
+        arrowcolor=[
+            ("active", TEXT),
+            ("pressed", TEXT),
+        ],
+    )
+
+
+def activar_estilo_campo_burger(ventana):
+    """Configura el tema ttk y las scrollbars del POS."""
+    style = ttk.Style(ventana)
+
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+
+    configurar_estilo_scrollbars(style)
+    return style
+
 
 
 def fmt_gs(monto):
@@ -41,6 +205,10 @@ class VentanaCierreCaja(tk.Toplevel):
         self.configure(bg=BG)
         self.transient(parent)
         self.grab_set()
+        configurar_barra_titulo_campo_burger(self)
+
+        # Estilo ttk de esta ventana.
+        self._ttk_style = activar_estilo_campo_burger(self)
 
         self._crear_interfaz()
         self.cargar_datos()
@@ -233,6 +401,7 @@ class VentanaCierreCaja(tk.Toplevel):
             scroll_container,
             orient="vertical",
             command=self.canvas.yview,
+            style="Campo.Vertical.TScrollbar",
         )
 
         self.frame_categorias = tk.Frame(
@@ -485,14 +654,13 @@ class VentanaCierreCaja(tk.Toplevel):
             text="Error al cargar datos."
         )
 
-        messagebox.showerror(
-            "Error",
+        mostrar_error(
+            self,
+            "Error de caja",
             (
-                "No se pudo cargar "
-                "el cierre de caja:\n"
+                "No se pudo cargar el cierre de caja.\n\n"
                 f"{mensaje}"
             ),
-            parent=self,
         )
 
         self.btn_cerrar.config(
@@ -507,7 +675,8 @@ class VentanaCierreCaja(tk.Toplevel):
         if self._cerrando:
             return
 
-        confirmar = messagebox.askyesno(
+        confirmado = confirmar(
+            self,
             "Confirmar cierre",
             (
                 "¿Está seguro de guardar el cierre "
@@ -515,10 +684,12 @@ class VentanaCierreCaja(tk.Toplevel):
                 "Las ventas permanecerán registradas "
                 "como COMPLETADA o ANULADA."
             ),
-            parent=self,
+            texto_confirmar="Sí, cerrar caja",
+            texto_cancelar="Cancelar",
+            peligro=True,
         )
 
-        if not confirmar:
+        if not confirmado:
             return
 
         self._cerrando = True
@@ -565,13 +736,13 @@ class VentanaCierreCaja(tk.Toplevel):
             cursor=""
         )
 
-        messagebox.showinfo(
+        mostrar_exito(
+            self,
             "Caja cerrada",
             (
                 f"La sesión #{sesion_id} "
                 "fue guardada y cerrada correctamente."
             ),
-            parent=self,
         )
 
         self.destroy()
@@ -598,8 +769,8 @@ class VentanaCierreCaja(tk.Toplevel):
             state="normal"
         )
 
-        messagebox.showerror(
+        mostrar_error(
+            self,
             "No se pudo cerrar la caja",
             mensaje,
-            parent=self,
         )

@@ -1,12 +1,11 @@
-from database import DBManager
+from api_client import APIClient
 from gui import VentanaPrincipal
 
 
 def main():
-    db = DBManager()
-    db.init_db()
+    api = APIClient()
 
-    app = VentanaPrincipal(db)
+    app = VentanaPrincipal(api)
     app.mainloop()
 
 

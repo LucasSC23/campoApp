@@ -1,13 +1,35 @@
+import sys
+import ctypes
 import datetime
 import os
 import queue
 import threading
+import textwrap
 import tkinter as tk
 from decimal import Decimal, InvalidOperation
-from tkinter import messagebox, simpledialog, ttk
+from tkinter import  ttk
 
 from ventana_cierre import VentanaCierreCaja
 from ventana_reportes import VentanaReportes
+from ui_dialogos import (
+    mostrar_exito,
+    mostrar_info,
+    mostrar_advertencia,
+    mostrar_error,
+    confirmar,
+    pedir_texto,
+    pedir_monto,
+)
+
+from impresora_termica import (
+    ErrorImpresora,
+    cargar_configuracion as cargar_config_impresora,
+    guardar_configuracion as guardar_config_impresora,
+    imprimir_prueba,
+    imprimir_ticket,
+    listar_impresoras,
+    obtener_impresora_predeterminada,
+)
 
 
 BG = "#141722"
@@ -19,6 +41,350 @@ GREEN = "#2ecc71"
 RED = "#ff4d4d"
 TEXT = "#ffffff"
 MUTED = "#a0a5b5"
+
+
+
+def _colorref(hex_color):
+    """Convierte #RRGGBB al COLORREF que usa Windows (0x00BBGGRR)."""
+    valor = hex_color.lstrip("#")
+    r = int(valor[0:2], 16)
+    g = int(valor[2:4], 16)
+    b = int(valor[4:6], 16)
+    return r | (g << 8) | (b << 16)
+
+
+def aplicar_barra_titulo_campo_burger(ventana):
+    """
+    Colorea la barra nativa de Windows para integrarla con Campo Burger POS.
+
+    Mantiene minimizar, maximizar, mover, redimensionar y cerrar nativos.
+    En versiones de Windows que no soportan color exacto, intenta al menos
+    activar el modo oscuro de la barra de título.
+    """
+    if sys.platform != "win32":
+        return
+
+    try:
+        ventana.update_idletasks()
+
+        hwnd_cliente = ventana.winfo_id()
+        hwnd = ctypes.windll.user32.GetParent(hwnd_cliente)
+        if not hwnd:
+            hwnd = hwnd_cliente
+
+        dwm = ctypes.windll.dwmapi
+
+        # Modo oscuro de la barra. El atributo cambió entre builds de Windows.
+        oscuro = ctypes.c_int(1)
+        resultado = dwm.DwmSetWindowAttribute(
+            hwnd,
+            20,  # DWMWA_USE_IMMERSIVE_DARK_MODE (Windows 10/11 recientes)
+            ctypes.byref(oscuro),
+            ctypes.sizeof(oscuro),
+        )
+        if resultado != 0:
+            dwm.DwmSetWindowAttribute(
+                hwnd,
+                19,  # fallback para algunas builds anteriores
+                ctypes.byref(oscuro),
+                ctypes.sizeof(oscuro),
+            )
+
+        # Windows 11 permite además definir los colores exactos.
+        atributos_colores = (
+            (35, HEADER_BG),  # DWMWA_CAPTION_COLOR
+            (36, TEXT),       # DWMWA_TEXT_COLOR
+            (34, HEADER_BG),  # DWMWA_BORDER_COLOR
+        )
+
+        for atributo, color_hex in atributos_colores:
+            color = ctypes.c_int(_colorref(color_hex))
+            dwm.DwmSetWindowAttribute(
+                hwnd,
+                atributo,
+                ctypes.byref(color),
+                ctypes.sizeof(color),
+            )
+
+    except Exception:
+        # La estética nunca debe impedir que el POS funcione.
+        pass
+
+
+def configurar_barra_titulo_campo_burger(ventana):
+    """Aplica/reaplica el estilo cuando Windows muestra o restaura la ventana."""
+    ventana.after(
+        25,
+        lambda: aplicar_barra_titulo_campo_burger(ventana),
+    )
+
+    ventana.bind(
+        "<Map>",
+        lambda _event: ventana.after(
+            25,
+            lambda: aplicar_barra_titulo_campo_burger(ventana),
+        ),
+        add="+",
+    )
+
+
+
+def configurar_estilo_scrollbars(style):
+    """Aplica el estilo Campo Burger a las barras de desplazamiento."""
+
+    style.configure(
+        "Campo.Vertical.TScrollbar",
+        troughcolor=PANEL,
+        background="#374151",
+        darkcolor="#374151",
+        lightcolor="#374151",
+        bordercolor=PANEL,
+        arrowcolor=TEXT,
+        relief="flat",
+        gripcount=0,
+        arrowsize=12,
+    )
+
+    style.map(
+        "Campo.Vertical.TScrollbar",
+        background=[
+            ("active", "#4b5563"),
+            ("pressed", ORANGE),
+        ],
+        arrowcolor=[
+            ("active", TEXT),
+            ("pressed", TEXT),
+        ],
+    )
+
+    style.configure(
+        "Campo.Horizontal.TScrollbar",
+        troughcolor=PANEL,
+        background="#374151",
+        darkcolor="#374151",
+        lightcolor="#374151",
+        bordercolor=PANEL,
+        arrowcolor=TEXT,
+        relief="flat",
+        gripcount=0,
+        arrowsize=12,
+    )
+
+    style.map(
+        "Campo.Horizontal.TScrollbar",
+        background=[
+            ("active", "#4b5563"),
+            ("pressed", ORANGE),
+        ],
+        arrowcolor=[
+            ("active", TEXT),
+            ("pressed", TEXT),
+        ],
+    )
+
+
+
+def configurar_estilo_comboboxes(style, ventana):
+    """Da a los Combobox el mismo estilo oscuro del POS."""
+
+    style.configure(
+        "Campo.TCombobox",
+        background=PANEL_2,
+        fieldbackground=PANEL_2,
+        foreground=TEXT,
+        arrowcolor=TEXT,
+        bordercolor="#374151",
+        lightcolor=PANEL_2,
+        darkcolor=PANEL_2,
+        relief="flat",
+        padding=5,
+    )
+
+    style.map(
+        "Campo.TCombobox",
+        fieldbackground=[
+            ("readonly", PANEL_2),
+            ("disabled", PANEL),
+        ],
+        background=[
+            ("readonly", PANEL_2),
+            ("active", "#374151"),
+            ("pressed", ORANGE),
+        ],
+        foreground=[
+            ("readonly", TEXT),
+            ("disabled", MUTED),
+        ],
+        arrowcolor=[
+            ("readonly", TEXT),
+            ("active", ORANGE),
+            ("pressed", TEXT),
+        ],
+        bordercolor=[
+            ("focus", ORANGE),
+            ("readonly", "#374151"),
+        ],
+    )
+
+    # Estilo de la lista desplegable interna del Combobox.
+    ventana.option_add("*TCombobox*Listbox.background", PANEL_2)
+    ventana.option_add("*TCombobox*Listbox.foreground", TEXT)
+    ventana.option_add("*TCombobox*Listbox.selectBackground", ORANGE)
+    ventana.option_add("*TCombobox*Listbox.selectForeground", TEXT)
+    ventana.option_add("*TCombobox*Listbox.font", ("Segoe UI", 9))
+
+
+def activar_estilo_campo_burger(ventana):
+    """Configura el tema ttk y las scrollbars del POS."""
+    style = ttk.Style(ventana)
+
+    try:
+        style.theme_use("clam")
+    except tk.TclError:
+        pass
+
+    configurar_estilo_scrollbars(style)
+    configurar_estilo_comboboxes(style, ventana)
+    return style
+
+
+
+def preparar_dialogo_campo_burger(
+    dialog,
+    parent,
+    titulo,
+    ancho,
+    alto,
+    on_close=None,
+):
+    """
+    Convierte un Toplevel pequeño en un diálogo 100% Campo Burger:
+    sin barra blanca de Windows, con encabezado oscuro, botón X y arrastre.
+    """
+
+    if on_close is None:
+        on_close = dialog.destroy
+
+    dialog.overrideredirect(True)
+    dialog.configure(bg=BG)
+    dialog.resizable(False, False)
+
+    try:
+        dialog.transient(parent)
+    except tk.TclError:
+        pass
+
+    # ------------------------------------------------------------
+    # BARRA SUPERIOR PERSONALIZADA
+    # ------------------------------------------------------------
+    header = tk.Frame(
+        dialog,
+        bg=HEADER_BG,
+        height=38,
+        cursor="fleur",
+    )
+    header.pack(fill="x")
+    header.pack_propagate(False)
+
+    lbl_titulo = tk.Label(
+        header,
+        text=titulo,
+        font=("Segoe UI", 10, "bold"),
+        fg=TEXT,
+        bg=HEADER_BG,
+        cursor="fleur",
+    )
+    lbl_titulo.pack(side="left", padx=12)
+
+    btn_cerrar = tk.Button(
+        header,
+        text="×",
+        command=on_close,
+        bg=HEADER_BG,
+        fg=MUTED,
+        activebackground=RED,
+        activeforeground=TEXT,
+        relief="flat",
+        bd=0,
+        font=("Segoe UI", 14, "bold"),
+        width=3,
+        cursor="hand2",
+    )
+    btn_cerrar.pack(side="right", fill="y")
+
+    # ------------------------------------------------------------
+    # ARRASTRE
+    # ------------------------------------------------------------
+    drag = {"x": 0, "y": 0}
+
+    def iniciar_arrastre(event):
+        drag["x"] = event.x_root - dialog.winfo_x()
+        drag["y"] = event.y_root - dialog.winfo_y()
+
+    def mover(event):
+        x = event.x_root - drag["x"]
+        y = event.y_root - drag["y"]
+        dialog.geometry(f"+{x}+{y}")
+
+    for widget in (header, lbl_titulo):
+        widget.bind("<ButtonPress-1>", iniciar_arrastre)
+        widget.bind("<B1-Motion>", mover)
+
+    # ------------------------------------------------------------
+    # CENTRADO SOBRE LA VENTANA PRINCIPAL
+    # ------------------------------------------------------------
+    dialog.update_idletasks()
+
+    try:
+        if parent is not None and parent.winfo_exists() and parent.winfo_viewable():
+            x = parent.winfo_rootx() + max(
+                0, (parent.winfo_width() - ancho) // 2
+            )
+            y = parent.winfo_rooty() + max(
+                0, (parent.winfo_height() - alto) // 2
+            )
+        else:
+            x = max(0, (dialog.winfo_screenwidth() - ancho) // 2)
+            y = max(0, (dialog.winfo_screenheight() - alto) // 2)
+    except tk.TclError:
+        x = max(0, (dialog.winfo_screenwidth() - ancho) // 2)
+        y = max(0, (dialog.winfo_screenheight() - alto) // 2)
+
+    dialog.geometry(f"{ancho}x{alto}+{x}+{y}")
+    dialog.lift()
+
+    # En Windows, una ventana overrideredirect puede mostrarse sin tomar
+    # correctamente el foco del teclado. Lo forzamos después de mapearla.
+    def activar_ventana():
+        try:
+            dialog.lift()
+            dialog.focus_force()
+        except tk.TclError:
+            pass
+
+    dialog.after_idle(activar_ventana)
+    dialog.after(80, activar_ventana)
+
+    return header
+
+
+
+def resource_path(nombre):
+    """Ruta compatible con desarrollo y ejecutable de PyInstaller."""
+    base_path = getattr(
+        sys,
+        "_MEIPASS",
+        os.path.abspath("."),
+    )
+    return os.path.join(base_path, nombre)
+
+
+def aplicar_icono_campo_burger(ventana):
+    try:
+        ventana.iconbitmap(resource_path("campo_burger.ico"))
+    except (tk.TclError, OSError):
+        pass
+
 
 
 def fmt_gs(monto):
@@ -92,6 +458,7 @@ class VentanaHistorialVentas(tk.Toplevel):
         self.minsize(620, 440)
         self.configure(bg=BG)
         self.transient(parent)
+        configurar_barra_titulo_campo_burger(self)
 
         tk.Label(
             self,
@@ -111,6 +478,7 @@ class VentanaHistorialVentas(tk.Toplevel):
             canvas_frame,
             orient="vertical",
             command=self.canvas.yview,
+            style="Campo.Vertical.TScrollbar",
         )
 
         self.frame_ventas = tk.Frame(self.canvas, bg=BG)
@@ -157,10 +525,13 @@ class VentanaHistorialVentas(tk.Toplevel):
     def _mostrar_error(self, mensaje):
         if not self.winfo_exists():
             return
-        messagebox.showerror(
+        mostrar_error(
+            self,
             "Error",
-            f"No se pudieron consultar las ventas del turno:\n{mensaje}",
-            parent=self,
+            (
+                "No se pudieron consultar las ventas del turno.\n\n"
+                f"{mensaje}"
+            ),
         )
         self._mostrar_cargando("No se pudieron cargar las ventas.")
 
@@ -213,6 +584,7 @@ class VentanaHistorialVentas(tk.Toplevel):
                 values=["Efectivo", "POS / Tarjeta", "Transferencia"],
                 state="readonly",
                 width=16,
+                style="Campo.TCombobox",
             )
             combo.set(metodo)
             combo.pack(side="right", padx=8)
@@ -257,8 +629,10 @@ class VentanaHistorialVentas(tk.Toplevel):
         self.parent.run_async(
             lambda: self.db.actualizar_metodo_pago_venta(venta_id, nuevo_metodo),
             lambda _resultado: self._despues_de_modificar(),
-            lambda mensaje: messagebox.showerror(
-                "No se pudo modificar", mensaje, parent=self
+            lambda mensaje: mostrar_error(
+                self,
+                "No se pudo modificar",
+                mensaje,
             ),
         )
 
@@ -267,10 +641,13 @@ class VentanaHistorialVentas(tk.Toplevel):
         self.cargar_datos()
 
     def anular(self, venta_id):
-        if not messagebox.askyesno(
+        if not confirmar(
+            self,
             "Anular venta",
             f"¿Desea anular el Ticket #{venta_id}?",
-            parent=self,
+            texto_confirmar="Sí, anular",
+            texto_cancelar="Cancelar",
+            peligro=True,
         ):
             return
 
@@ -300,6 +677,7 @@ class VentanaTicket(tk.Toplevel):
         self.geometry("390x520")
         self.configure(bg=BG)
         self.transient(parent)
+        configurar_barra_titulo_campo_burger(self)
 
         self.texto_ticket = self._armar_texto(
             venta_id,
@@ -342,49 +720,63 @@ class VentanaTicket(tk.Toplevel):
         tipo_entrega,
         recargo_delivery,
     ):
+        ancho = 42
         ahora = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
+
         lineas = [
-            "======= CAMPO BURGER & ACAI =======",
+            "CAMPO BURGER & ACAI".center(ancho),
             f"Ticket #{venta_id}",
             f"Fecha: {ahora}",
             f"Entrega: {tipo_entrega}",
-            "-" * 35,
+            "-" * ancho,
         ]
+
+        def agregar_envuelto(texto):
+            partes = textwrap.wrap(
+                str(texto),
+                width=ancho,
+                break_long_words=False,
+                break_on_hyphens=False,
+            )
+            lineas.extend(partes or [""])
 
         for item in items:
             obs = f" ({item['obs']})" if item.get("obs") else ""
 
             if item.get("peso_gramos") is not None:
-                lineas.append(f"{item['nombre']}{obs}")
-                lineas.append(
+                agregar_envuelto(f"{item['nombre']}{obs}")
+                agregar_envuelto(
                     f"{fmt_gramos(item['peso_gramos'])} g x "
                     f"{fmt_gs(item['precio_kg'])}/kg"
                 )
             else:
-                lineas.append(
+                agregar_envuelto(
                     f"{item['cant']}x {item['nombre']}{obs}"
                 )
 
-            lineas.append(
-                f"{fmt_gs(item['subtotal']):>35}"
-            )
+            monto = fmt_gs(item["subtotal"])
+            lineas.append(monto.rjust(ancho))
 
         if Decimal(str(recargo_delivery)) > 0:
-            lineas.append("-" * 35)
-            lineas.append(f"Recargo delivery: {fmt_gs(recargo_delivery)}")
+            lineas.append("-" * ancho)
+            agregar_envuelto(
+                f"Recargo delivery: {fmt_gs(recargo_delivery)}"
+            )
 
         lineas.extend(
             [
-                "-" * 35,
+                "-" * ancho,
                 f"TOTAL: {fmt_gs(total)}",
                 f"Pago: {metodo_pago}",
-                "=" * 35,
+                "=" * ancho,
             ]
         )
+
         return "\n".join(lineas)
 
     def guardar_e_imprimir(self):
         os.makedirs("tickets", exist_ok=True)
+
         ruta = os.path.join(
             "tickets",
             f"ticket_{datetime.datetime.now():%Y%m%d_%H%M%S}.txt",
@@ -393,25 +785,284 @@ class VentanaTicket(tk.Toplevel):
         try:
             with open(ruta, "w", encoding="utf-8") as archivo:
                 archivo.write(self.texto_ticket)
+
         except OSError as exc:
-            messagebox.showerror(
-                "Error", f"No se pudo guardar el ticket:\n{exc}", parent=self
+            mostrar_error(
+                self,
+                "Error al guardar ticket",
+                f"No se pudo guardar el ticket.\n\n{exc}",
             )
             return
 
+        self.config(cursor="watch")
+
+        # ESTA FUNCIÓN VA DENTRO DE guardar_e_imprimir()
+        def realizar_impresion():
+            config = cargar_config_impresora()
+
+            nombre_impresora = str(
+                config.get("nombre_impresora", "")
+            ).strip()
+
+            if not nombre_impresora:
+                raise ErrorImpresora(
+                    "No hay una impresora configurada.\n\n"
+                    "Ingresá a 'Impresora' y seleccioná una impresora instalada."
+                )
+
+            impresoras_disponibles = listar_impresoras()
+
+            if nombre_impresora not in impresoras_disponibles:
+                raise ErrorImpresora(
+                    "No se detecta la impresora configurada.\n\n"
+                    f"Impresora: {nombre_impresora}\n\n"
+                    "Verificá que esté encendida, conectada y disponible en Windows."
+                )
+
+            return imprimir_ticket(self.texto_ticket)
+
+        def impresion_exitosa(impresora):
+            if not self.winfo_exists():
+                return
+
+            self.config(cursor="")
+
+            mostrar_exito(
+                self,
+                "Ticket impreso",
+                (
+                    "El ticket fue enviado correctamente a la impresora térmica.\n\n"
+                    f"Impresora: {impresora}"
+                ),
+            )
+
+        def impresion_error(mensaje):
+            if not self.winfo_exists():
+                return
+
+            self.config(cursor="")
+
+            mostrar_error(
+                self,
+                "No se pudo imprimir",
+                (
+                    f"{mensaje}\n\n"
+                    "El ticket igualmente quedó guardado en:\n"
+                    f"{ruta}"
+                ),
+            )
+
+        self.master.run_async(
+            realizar_impresion,
+            impresion_exitosa,
+            impresion_error,
+        )
+
+
+class VentanaConfiguracionImpresora(tk.Toplevel):
+    """Selecciona la impresora térmica instalada y permite imprimir una prueba."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+
+        self.parent = parent
+        self.title("Impresora térmica")
+        self.configure(bg=BG)
+
+        preparar_dialogo_campo_burger(
+            self,
+            parent,
+            "Impresora térmica 80 mm",
+            520,
+            390,
+        )
+
+        self.wait_visibility()
+        self.grab_set()
+
+        config = cargar_config_impresora()
+
+        tk.Label(
+            self,
+            text="CONFIGURACIÓN DE IMPRESIÓN",
+            font=("Segoe UI", 12, "bold"),
+            fg=ORANGE,
+            bg=BG,
+        ).pack(pady=(20, 5))
+
+        tk.Label(
+            self,
+            text=(
+                "Instalá primero el driver de la impresora en Windows. "
+                "Luego seleccionala aquí una sola vez."
+            ),
+            font=("Segoe UI", 9),
+            fg=MUTED,
+            bg=BG,
+            justify="center",
+            wraplength=440,
+        ).pack(pady=(0, 15))
+
+        frame = tk.Frame(self, bg=BG)
+        frame.pack(fill="x", padx=36)
+
+        tk.Label(
+            frame,
+            text="Impresora:",
+            font=("Segoe UI", 9, "bold"),
+            fg=TEXT,
+            bg=BG,
+            anchor="w",
+        ).pack(fill="x", pady=(0, 5))
+
         try:
-            os.startfile(ruta, "print")
-            messagebox.showinfo(
-                "Ticket",
-                f"Ticket guardado y enviado a impresión:\n{ruta}",
-                parent=self,
+            impresoras = listar_impresoras()
+        except ErrorImpresora as exc:
+            impresoras = []
+            mostrar_error(self, "Impresoras", str(exc))
+
+        self.combo_impresora = ttk.Combobox(
+            frame,
+            values=impresoras,
+            state="readonly",
+            style="Campo.TCombobox",
+            width=48,
+        )
+        self.combo_impresora.pack(fill="x")
+
+        configurada = config.get("nombre_impresora", "")
+        predeterminada = ""
+
+        try:
+            predeterminada = obtener_impresora_predeterminada()
+        except ErrorImpresora:
+            pass
+
+        seleccion = (
+            configurada
+            if configurada in impresoras
+            else predeterminada
+            if predeterminada in impresoras
+            else impresoras[0]
+            if impresoras
+            else ""
+        )
+
+        if seleccion:
+            self.combo_impresora.set(seleccion)
+
+        opciones = tk.Frame(self, bg=BG)
+        opciones.pack(fill="x", padx=36, pady=16)
+
+        self.var_cortar = tk.BooleanVar(
+            value=bool(config.get("cortar_papel", True))
+        )
+
+        tk.Checkbutton(
+            opciones,
+            text="Corte automático al finalizar",
+            variable=self.var_cortar,
+            bg=BG,
+            fg=TEXT,
+            activebackground=BG,
+            activeforeground=TEXT,
+            selectcolor=PANEL_2,
+            font=("Segoe UI", 9),
+        ).pack(anchor="w")
+
+        tk.Label(
+            self,
+            text=(
+                "Formato configurado: papel de 80 mm · 42 caracteres por línea · "
+                "ESC/POS RAW"
+            ),
+            font=("Segoe UI", 8),
+            fg=MUTED,
+            bg=BG,
+        ).pack(pady=(0, 12))
+
+        botones = tk.Frame(self, bg=BG)
+        botones.pack(side="bottom", fill="x", padx=36, pady=22)
+
+        tk.Button(
+            botones,
+            text="Imprimir prueba",
+            command=self._imprimir_prueba,
+            bg=PANEL_2,
+            fg=TEXT,
+            relief="flat",
+            padx=16,
+            pady=7,
+            cursor="hand2",
+        ).pack(side="left")
+
+        tk.Button(
+            botones,
+            text="Guardar",
+            command=self._guardar,
+            bg=GREEN,
+            fg=TEXT,
+            relief="flat",
+            padx=18,
+            pady=7,
+            cursor="hand2",
+        ).pack(side="right")
+
+    def _guardar_config(self):
+        nombre = self.combo_impresora.get().strip()
+
+        if not nombre:
+            mostrar_advertencia(
+                self,
+                "Impresora",
+                "Seleccioná una impresora instalada en Windows.",
             )
-        except (AttributeError, OSError):
-            messagebox.showinfo(
-                "Ticket guardado",
-                f"El ticket se guardó en:\n{ruta}",
-                parent=self,
+            return None
+
+        return guardar_config_impresora(
+            nombre_impresora=nombre,
+            ancho_caracteres=42,
+            cortar_papel=self.var_cortar.get(),
+            copias=1,
+        )
+
+    def _guardar(self):
+        config = self._guardar_config()
+        if config is None:
+            return
+
+        mostrar_exito(
+            self,
+            "Impresora configurada",
+            (
+                "La impresora térmica quedó configurada para los "
+                "próximos tickets."
+            ),
+        )
+        self.destroy()
+
+    def _imprimir_prueba(self):
+        config = self._guardar_config()
+        if config is None:
+            return
+
+        try:
+            impresora = imprimir_prueba(
+                config["nombre_impresora"]
             )
+        except ErrorImpresora as exc:
+            mostrar_error(
+                self,
+                "Prueba de impresión",
+                str(exc),
+            )
+            return
+
+        mostrar_exito(
+            self,
+            "Prueba enviada",
+            f"Se envió un ticket de prueba a:\n\n{impresora}",
+        )
 
 
 class VentanaPrincipal(tk.Tk):
@@ -447,10 +1098,14 @@ class VentanaPrincipal(tk.Tk):
         self._header_en_proceso = False
 
         self.title("Campo Burger & Açaí - Punto de Venta")
+        aplicar_icono_campo_burger(self)
         self.geometry("1180x760")
         self.minsize(980, 650)
         self.configure(bg=BG)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        # Estilo global ttk del POS (scrollbars, etc.).
+        self._ttk_style = activar_estilo_campo_burger(self)
 
         self.withdraw()
         if not self._asegurar_caja_abierta():
@@ -459,6 +1114,7 @@ class VentanaPrincipal(tk.Tk):
 
         self.crear_interfaz()
         self.deiconify()
+        configurar_barra_titulo_campo_burger(self)
 
         # Procesa callbacks provenientes de threads en el hilo de Tkinter.
         self.after(40, self._procesar_cola_ui)
@@ -511,11 +1167,15 @@ class VentanaPrincipal(tk.Tk):
     def _asegurar_caja_abierta(self):
         try:
             sesion = self.db.obtener_sesion_abierta()
+
         except Exception as exc:
-            messagebox.showerror(
+            mostrar_error(
+                self,
                 "Error de base de datos",
-                f"No se pudo consultar la sesión de caja:\n{exc}",
-                parent=self,
+                (
+                    "No se pudo consultar la sesión de caja.\n\n"
+                    f"{exc}"
+                ),
             )
             return False
 
@@ -523,39 +1183,50 @@ class VentanaPrincipal(tk.Tk):
             return True
 
         while True:
-            entrada = simpledialog.askstring(
+            monto = pedir_monto(
+                self,
                 "Apertura de caja",
                 (
                     "No existe una sesión de caja abierta.\n\n"
-                    "Ingrese el fondo inicial en Guaraníes.\n"
-                    "Ejemplo: 150000"
+                    "Ingresá el fondo inicial disponible "
+                    "en la caja."
                 ),
-                parent=self,
+                etiqueta="Fondo inicial:",
+                valor_inicial="0",
+                texto_confirmar="Abrir caja",
             )
 
-            if entrada is None:
+            if monto is None:
                 return False
 
             try:
-                monto = parse_gs(entrada)
                 sesion_id = self.db.abrir_caja(monto)
-                messagebox.showinfo(
+
+                mostrar_exito(
+                    self,
                     "Caja abierta",
                     (
-                        f"Sesión #{sesion_id} abierta correctamente.\n"
+                        f"Sesión #{sesion_id} abierta correctamente.\n\n"
                         f"Fondo inicial: {fmt_gs(monto)}"
                     ),
-                    parent=self,
                 )
+
                 return True
+
             except ValueError as exc:
-                messagebox.showwarning("Monto inválido", str(exc), parent=self)
+                mostrar_advertencia(
+                    self,
+                    "Monto inválido",
+                    str(exc),
+                )
+
             except Exception as exc:
-                messagebox.showerror(
-                    "No se pudo abrir la caja", str(exc), parent=self
+                mostrar_error(
+                    self,
+                    "No se pudo abrir la caja",
+                    str(exc),
                 )
                 return False
-
     # ================================================================
     # CATÁLOGO EN MEMORIA
     # ================================================================
@@ -597,10 +1268,13 @@ class VentanaPrincipal(tk.Tk):
         self._catalogo_cargando = False
         self.btn_recargar_catalogo.config(state="normal", text="↻")
         self._mostrar_estado_catalogo("No se pudo cargar el catálogo.")
-        messagebox.showerror(
+        mostrar_error(
+            self,
             "Error de catálogo",
-            f"No se pudieron cargar los productos desde Supabase.\n\n{mensaje}",
-            parent=self,
+            (
+                "No se pudieron cargar los productos desde Supabase.\n\n"
+                f"{mensaje}"
+            ),
         )
 
     @classmethod
@@ -727,6 +1401,18 @@ class VentanaPrincipal(tk.Tk):
             cursor="hand2",
         ).pack(side="left", padx=4)
 
+        tk.Button(
+            acciones,
+            text="Impresora",
+            command=self.abrir_configuracion_impresora,
+            bg=PANEL_2,
+            fg=TEXT,
+            relief="flat",
+            font=("Helvetica", 9, "bold"),
+            padx=10,
+            cursor="hand2",
+        ).pack(side="left", padx=4)
+
         self.btn_recargar_catalogo = tk.Button(
             acciones,
             text="↻",
@@ -798,6 +1484,7 @@ class VentanaPrincipal(tk.Tk):
             left,
             orient="vertical",
             command=self.canvas_menu.yview,
+            style="Campo.Vertical.TScrollbar",
         )
         bind_mousewheel_local(self.canvas_menu)
 
@@ -846,6 +1533,7 @@ class VentanaPrincipal(tk.Tk):
             cart_frame,
             orient="vertical",
             command=self.canvas_carrito.yview,
+            style="Campo.Vertical.TScrollbar",
         )
         bind_mousewheel_local(self.canvas_carrito)
 
@@ -1083,10 +1771,14 @@ class VentanaPrincipal(tk.Tk):
 
         dialog = tk.Toplevel(self)
         dialog.title("Ingresar peso")
-        dialog.geometry("380x270")
-        dialog.resizable(False, False)
-        dialog.configure(bg=BG)
-        dialog.transient(self)
+        preparar_dialogo_campo_burger(
+            dialog,
+            self,
+            "Ingresar peso",
+            380,
+            305,
+        )
+        dialog.wait_visibility()
         dialog.grab_set()
 
         tk.Label(
@@ -1114,15 +1806,53 @@ class VentanaPrincipal(tk.Tk):
         ).pack()
 
         peso_var = tk.StringVar()
+
+        def validar_peso_tecla(nuevo_valor):
+            return nuevo_valor == "" or nuevo_valor.isdigit()
+
+        validacion_peso = (
+            dialog.register(validar_peso_tecla),
+            "%P",
+        )
+
         entry_peso = tk.Entry(
             dialog,
             textvariable=peso_var,
             font=("Helvetica", 14),
             justify="center",
             width=16,
+            bg=PANEL_2,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#374151",
+            highlightcolor=ORANGE,
+            validate="key",
+            validatecommand=validacion_peso,
         )
         entry_peso.pack(pady=7)
-        entry_peso.focus_set()
+
+        def enfocar_peso():
+            try:
+                dialog.lift()
+                dialog.focus_force()
+                entry_peso.focus_force()
+                entry_peso.icursor(tk.END)
+            except tk.TclError:
+                pass
+
+        # Ejecutarlo después de que Windows termine de mostrar el diálogo.
+        dialog.after_idle(enfocar_peso)
+        dialog.after(100, enfocar_peso)
+
+        # Al hacer clic también aseguramos el foco de teclado.
+        entry_peso.bind(
+            "<Button-1>",
+            lambda _e: dialog.after_idle(enfocar_peso),
+            add="+",
+        )
 
         lbl_total = tk.Label(
             dialog,
@@ -1170,10 +1900,10 @@ class VentanaPrincipal(tk.Tk):
             resultado = calcular()
 
             if resultado is None:
-                messagebox.showwarning(
+                mostrar_advertencia(
+                    dialog,
                     "Peso inválido",
                     "Ingrese un peso válido en gramos, mayor que cero.",
-                    parent=dialog,
                 )
                 return
 
@@ -1254,10 +1984,14 @@ class VentanaPrincipal(tk.Tk):
 
         dialog = tk.Toplevel(self)
         dialog.title("Observación")
-        dialog.geometry("340x150")
-        dialog.resizable(False, False)
-        dialog.configure(bg=BG)
-        dialog.transient(self)
+        preparar_dialogo_campo_burger(
+            dialog,
+            self,
+            "Observación",
+            340,
+            190,
+        )
+        dialog.wait_visibility()
         dialog.grab_set()
 
         tk.Label(
@@ -1268,10 +2002,33 @@ class VentanaPrincipal(tk.Tk):
             font=("Helvetica", 9, "bold"),
         ).pack(pady=(15, 6))
 
-        entry = tk.Entry(dialog, font=("Helvetica", 10), width=34)
+        entry = tk.Entry(
+            dialog,
+            font=("Helvetica", 10),
+            width=34,
+            bg=PANEL_2,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#374151",
+            highlightcolor=ORANGE,
+        )
         entry.insert(0, actual)
         entry.pack(pady=4)
-        entry.focus_set()
+
+        def enfocar_observacion():
+            try:
+                dialog.lift()
+                dialog.focus_force()
+                entry.focus_force()
+                entry.icursor(tk.END)
+            except tk.TclError:
+                pass
+
+        dialog.after_idle(enfocar_observacion)
+        dialog.after(100, enfocar_observacion)
 
         def guardar():
             texto = entry.get().strip()
@@ -1456,10 +2213,10 @@ class VentanaPrincipal(tk.Tk):
             return
 
         if not self.carrito:
-            messagebox.showwarning(
+            mostrar_advertencia(
+                self,
                 "Carrito vacío",
                 "Agregá al menos un producto antes de confirmar.",
-                parent=self,
             )
             return
 
@@ -1580,22 +2337,32 @@ class VentanaPrincipal(tk.Tk):
         self._venta_en_proceso = False
         self.btn_confirmar_venta.config(state="normal", text="Confirmar Venta")
         self.config(cursor="")
-        messagebox.showerror(
+        mostrar_error(
+            self,
             "No se pudo registrar la venta",
             mensaje,
-            parent=self,
         )
 
     def _pedir_datos_venta(self):
         dialog = tk.Toplevel(self)
         dialog.title("Confirmar venta")
-        dialog.geometry("360x280")
-        dialog.resizable(False, False)
-        dialog.configure(bg=BG)
-        dialog.transient(self)
-        dialog.grab_set()
 
         resultado = {"valor": None}
+
+        def cerrar_dialogo():
+            resultado["valor"] = None
+            dialog.destroy()
+
+        preparar_dialogo_campo_burger(
+            dialog,
+            self,
+            "Confirmar venta",
+            360,
+            325,
+            on_close=cerrar_dialogo,
+        )
+        dialog.wait_visibility()
+        dialog.grab_set()
 
         tk.Label(
             dialog,
@@ -1610,6 +2377,7 @@ class VentanaPrincipal(tk.Tk):
             values=["Efectivo", "POS / Tarjeta", "Transferencia"],
             state="readonly",
             width=25,
+            style="Campo.TCombobox",
         )
         combo_pago.current(0)
         combo_pago.pack()
@@ -1627,6 +2395,7 @@ class VentanaPrincipal(tk.Tk):
             values=["Mostrador", "Retiro", "Delivery"],
             state="readonly",
             width=25,
+            style="Campo.TCombobox",
         )
         combo_entrega.current(0)
         combo_entrega.pack()
@@ -1640,7 +2409,18 @@ class VentanaPrincipal(tk.Tk):
             font=("Helvetica", 9),
         ).pack(side="left", padx=(0, 5))
 
-        entry_recargo = tk.Entry(frame_delivery, width=15)
+        entry_recargo = tk.Entry(
+            frame_delivery,
+            width=15,
+            bg=PANEL_2,
+            fg=TEXT,
+            insertbackground=TEXT,
+            relief="flat",
+            bd=0,
+            highlightthickness=1,
+            highlightbackground="#374151",
+            highlightcolor=ORANGE,
+        )
         entry_recargo.insert(0, "0")
         entry_recargo.pack(side="left")
 
@@ -1662,10 +2442,10 @@ class VentanaPrincipal(tk.Tk):
                     else Decimal("0")
                 )
             except ValueError as exc:
-                messagebox.showwarning(
+                mostrar_advertencia(
+                    dialog,
                     "Recargo inválido",
                     str(exc),
-                    parent=dialog,
                 )
                 return
 
@@ -1693,7 +2473,7 @@ class VentanaPrincipal(tk.Tk):
         tk.Button(
             botones,
             text="Cancelar",
-            command=dialog.destroy,
+            command=cerrar_dialogo,
             bg=PANEL_2,
             fg=TEXT,
             relief="flat",
@@ -1701,6 +2481,7 @@ class VentanaPrincipal(tk.Tk):
             pady=5,
         ).pack(side="left", padx=5)
 
+        dialog.bind("<Escape>", lambda _e: cerrar_dialogo())
         dialog.wait_window()
         return resultado["valor"]
 
@@ -1714,6 +2495,9 @@ class VentanaPrincipal(tk.Tk):
     def abrir_reportes(self):
         VentanaReportes(self, self.db)
 
+    def abrir_configuracion_impresora(self):
+        VentanaConfiguracionImpresora(self)
+
     def abrir_cierre_caja(self):
         VentanaCierreCaja(self, self.db)
 
@@ -1723,10 +2507,10 @@ class VentanaPrincipal(tk.Tk):
 
     def on_close(self):
         if self._venta_en_proceso:
-            messagebox.showwarning(
+            mostrar_advertencia(
+                self,
                 "Venta en proceso",
                 "Espere a que termine de registrarse la venta antes de cerrar.",
-                parent=self,
             )
             return
 
