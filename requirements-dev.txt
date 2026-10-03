@@ -1,0 +1,8 @@
+# ================================================================
+# CAMPO POS - HERRAMIENTAS DE DESARROLLO
+# ================================================================
+
+-r requirements.txt
+
+# Generacion del ejecutable Windows
+pyinstaller==6.22.3

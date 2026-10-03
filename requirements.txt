@@ -1,0 +1,19 @@
+# ================================================================
+# CAMPO POS - DEPENDENCIAS DE EJECUCION
+# ================================================================
+
+# Backend / API
+fastapi==0.141.1
+uvicorn==0.54.0
+pydantic==2.13.4
+
+# Cliente HTTP del POS
+requests==2.34.2
+
+# PostgreSQL / Supabase
+psycopg2-binary==2.9.12
+python-dotenv==1.2.3
+
+# Impresion en Windows
+# Solo se instala cuando el sistema operativo es Windows.
+pywin32==312; platform_system == "Windows"
