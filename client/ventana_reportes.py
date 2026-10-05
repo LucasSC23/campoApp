@@ -4,8 +4,7 @@ import tkinter as tk
 from decimal import Decimal, InvalidOperation
 from tkinter import ttk
 
-from ui_dialogos import mostrar_error
-
+from client.ui_dialogos import mostrar_error
 
 BG = "#141722"
 HEADER_BG = "#11141d"

@@ -7,7 +7,6 @@ from psycopg2 import pool
 from psycopg2.errors import UniqueViolation
 from dotenv import load_dotenv
 
-
 load_dotenv()
 
 

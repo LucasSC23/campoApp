@@ -1,5 +1,5 @@
-from api_client import APIClient
-from gui import VentanaPrincipal
+from client.api_client import APIClient
+from client.gui import VentanaPrincipal
 
 
 def main():

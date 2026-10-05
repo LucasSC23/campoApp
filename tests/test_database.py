@@ -1,5 +1,4 @@
-from database import DBManager
-
+from server.database import DBManager
 
 def main():
     print("=== INICIANDO PRUEBA DE BASE DE DATOS ===")

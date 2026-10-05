@@ -7,11 +7,11 @@ import threading
 import textwrap
 import tkinter as tk
 from decimal import Decimal, InvalidOperation
-from tkinter import  ttk
+from tkinter import ttk
 
-from ventana_cierre import VentanaCierreCaja
-from ventana_reportes import VentanaReportes
-from ui_dialogos import (
+from client.ventana_cierre import VentanaCierreCaja
+from client.ventana_reportes import VentanaReportes
+from client.ui_dialogos import (
     mostrar_exito,
     mostrar_info,
     mostrar_advertencia,
@@ -21,7 +21,7 @@ from ui_dialogos import (
     pedir_monto,
 )
 
-from impresora_termica import (
+from client.impresora_termica import (
     ErrorImpresora,
     cargar_configuracion as cargar_config_impresora,
     guardar_configuracion as guardar_config_impresora,
@@ -30,7 +30,6 @@ from impresora_termica import (
     listar_impresoras,
     obtener_impresora_predeterminada,
 )
-
 
 BG = "#141722"
 PANEL = "#1c2030"

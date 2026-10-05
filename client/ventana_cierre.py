@@ -5,13 +5,11 @@ import tkinter as tk
 from decimal import Decimal, InvalidOperation
 from tkinter import ttk
 
-from ui_dialogos import (
+from client.ui_dialogos import (
     confirmar,
     mostrar_error,
     mostrar_exito,
 )
-
-
 BG = "#141722"
 HEADER_BG = "#11141d"
 PANEL = "#1c2030"

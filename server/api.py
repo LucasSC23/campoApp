@@ -4,8 +4,7 @@ from decimal import Decimal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from database import DBManager
-
+from server.database import DBManager
 
 db = None
 
