@@ -4,6 +4,8 @@ from decimal import Decimal
 
 import requests
 
+from client.config import cargar_configuracion
+
 # ============================================================
 # EXCEPCIONES
 # ============================================================
@@ -33,10 +35,7 @@ class APIClient:
         timeout=30,
     ):
         if base_url is None:
-            base_url = os.getenv(
-                "CAMPO_API_URL",
-                "http://127.0.0.1:8000",
-            )
+            base_url = cargar_configuracion()["api_url"]
 
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
