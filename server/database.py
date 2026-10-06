@@ -1,4 +1,6 @@
 import os
+import hashlib
+import json
 from contextlib import contextmanager
 from decimal import Decimal, InvalidOperation
 
@@ -35,6 +37,10 @@ class VentaNoModificableError(RuntimeError):
     """La venta no existe o ya no puede modificarse."""
 
 
+class IdempotenciaConflictoError(RuntimeError):
+    """La misma operación fue reutilizada con datos distintos."""
+
+
 class DBManager:
     """
     Acceso PostgreSQL/Supabase para Campo Burger.
@@ -69,6 +75,8 @@ class DBManager:
             "estado",
             "tipo_entrega",
             "recargo_delivery",
+            "operacion_id",
+            "operacion_hash",
         },
         "detalle_ventas": {
             "id",
@@ -739,6 +747,7 @@ class DBManager:
         items,
         tipo_entrega="Mostrador",
         recargo_delivery=0,
+        operacion_id=None,
     ):
         metodo_pago = self._validar_metodo_pago(metodo_pago)
         tipo_entrega = self._validar_tipo_entrega(tipo_entrega)
@@ -747,6 +756,10 @@ class DBManager:
             recargo_delivery,
             "recargo delivery"
         )
+
+        operacion_id = str(operacion_id or "").strip()
+        if not operacion_id:
+            raise ValueError("Falta operacion_id para registrar la venta.")
 
         if not items:
             raise ValueError(
@@ -909,10 +922,68 @@ class DBManager:
             )
 
         # --------------------------------------------------------------
+        # Idempotencia
+        # --------------------------------------------------------------
+        contenido_operacion = {
+            "total": str(total),
+            "metodo_pago": metodo_pago,
+            "tipo_entrega": tipo_entrega,
+            "recargo_delivery": str(recargo),
+            "items": [
+                {
+                    "cantidad": item["cantidad"],
+                    "nombre": item["nombre"],
+                    "precio_unitario": str(item["precio_unitario"]),
+                    "subtotal": str(item["subtotal"]),
+                    "notas": item["notas"],
+                    "es_extra": item["es_extra"],
+                    "parent_detalle_id": item["parent_detalle_id"],
+                    "peso_gramos": (
+                        str(item["peso_gramos"])
+                        if item["peso_gramos"] is not None
+                        else None
+                    ),
+                    "precio_kg": (
+                        str(item["precio_kg"])
+                        if item["precio_kg"] is not None
+                        else None
+                    ),
+                }
+                for item in items_normalizados
+            ],
+        }
+
+        operacion_hash = hashlib.sha256(
+            json.dumps(
+                contenido_operacion,
+                sort_keys=True,
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+        # --------------------------------------------------------------
         # Guardar venta
         # --------------------------------------------------------------
         with self._connection() as conn:
             with conn.cursor() as cur:
+
+                cur.execute(
+                    """
+                    SELECT id, operacion_hash
+                    FROM ventas
+                    WHERE operacion_id = %s;
+                    """,
+                    (operacion_id,),
+                )
+                venta_existente = cur.fetchone()
+
+                if venta_existente:
+                    if venta_existente[1] != operacion_hash:
+                        raise IdempotenciaConflictoError(
+                            "La operación ya fue utilizada con datos distintos."
+                        )
+                    return venta_existente[0]
 
                 cur.execute(
                     """
@@ -945,7 +1016,9 @@ class DBManager:
                             metodo_pago,
                             estado,
                             tipo_entrega,
-                            recargo_delivery
+                            recargo_delivery,
+                            operacion_id,
+                            operacion_hash
                         )
                     VALUES (
                         %s,
@@ -954,8 +1027,13 @@ class DBManager:
                         %s,
                         'COMPLETADA',
                         %s,
+                        %s,
+                        %s,
                         %s
                     )
+                    ON CONFLICT (operacion_id)
+                    WHERE operacion_id IS NOT NULL
+                    DO NOTHING
                     RETURNING id;
                     """,
                     (
@@ -964,10 +1042,37 @@ class DBManager:
                         metodo_pago,
                         tipo_entrega,
                         recargo,
+                        operacion_id,
+                        operacion_hash,
                     ),
                 )
 
-                venta_id = cur.fetchone()[0]
+                fila_venta = cur.fetchone()
+
+                if fila_venta is None:
+                    cur.execute(
+                        """
+                        SELECT id, operacion_hash
+                        FROM ventas
+                        WHERE operacion_id = %s;
+                        """,
+                        (operacion_id,),
+                    )
+                    venta_existente = cur.fetchone()
+
+                    if not venta_existente:
+                        raise RuntimeError(
+                            "No se pudo resolver la operación idempotente."
+                        )
+
+                    if venta_existente[1] != operacion_hash:
+                        raise IdempotenciaConflictoError(
+                            "La operación ya fue utilizada con datos distintos."
+                        )
+
+                    return venta_existente[0]
+
+                venta_id = fila_venta[0]
 
                 # ----------------------------------------------------------
                 # Guardar detalles
