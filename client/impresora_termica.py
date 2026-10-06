@@ -4,7 +4,7 @@ from pathlib import Path
 
 APP_DIR = Path(
     os.environ.get(
-        "APPDATA",
+        "LOCALAPPDATA",
         str(Path.home()),
     )
 ) / "CampoBurgerPOS"
@@ -94,11 +94,22 @@ def listar_impresoras():
         | win32print.PRINTER_ENUM_CONNECTIONS
     )
 
-    impresoras = win32print.EnumPrinters(flags, None, 1)
+    try:
+        impresoras = win32print.EnumPrinters(flags, None, 2)
+    except Exception as exc:
+        raise ErrorImpresora(
+            "No se pudo obtener la lista de impresoras de Windows."
+        ) from exc
 
     nombres = []
     for info in impresoras:
-        nombre = info.get("pPrinterName")
+        if isinstance(info, dict):
+            nombre = info.get("pPrinterName")
+        elif isinstance(info, (tuple, list)) and len(info) >= 3:
+            nombre = info[2]
+        else:
+            nombre = None
+
         if nombre:
             nombres.append(str(nombre))
 
@@ -132,8 +143,6 @@ def obtener_impresora_activa():
 
 
 def _normalizar_texto_escpos(texto):
-    # CP850 permite los caracteres españoles habituales y es común en
-    # impresoras ESC/POS. Los caracteres no disponibles se reemplazan.
     return str(texto).replace("\r\n", "\n").replace("\r", "\n")
 
 
@@ -141,14 +150,8 @@ def _datos_escpos(texto, cortar_papel=True):
     texto = _normalizar_texto_escpos(texto)
 
     datos = bytearray()
-
-    # Inicializar impresora.
     datos.extend(b"\x1b\x40")
-
-    # Seleccionar tabla de caracteres PC850 en equipos ESC/POS compatibles.
     datos.extend(b"\x1b\x74\x02")
-
-    # Alineación izquierda.
     datos.extend(b"\x1b\x61\x00")
 
     for linea in texto.split("\n"):
@@ -156,12 +159,12 @@ def _datos_escpos(texto, cortar_papel=True):
         es_total = linea.strip().upper().startswith("TOTAL:")
 
         if es_cabecera:
-            datos.extend(b"\x1b\x61\x01")  # centrar
-            datos.extend(b"\x1b\x45\x01")  # negrita
+            datos.extend(b"\x1b\x61\x01")
+            datos.extend(b"\x1b\x45\x01")
         elif es_total:
             datos.extend(b"\x1b\x61\x00")
             datos.extend(b"\x1b\x45\x01")
-            datos.extend(b"\x1d\x21\x01")  # doble alto
+            datos.extend(b"\x1d\x21\x01")
         else:
             datos.extend(b"\x1b\x61\x00")
             datos.extend(b"\x1b\x45\x00")
@@ -170,28 +173,18 @@ def _datos_escpos(texto, cortar_papel=True):
         datos.extend(linea.encode("cp850", errors="replace"))
         datos.extend(b"\n")
 
-    # Restablecer tamaño y negrita.
     datos.extend(b"\x1d\x21\x00")
     datos.extend(b"\x1b\x45\x00")
     datos.extend(b"\x1b\x61\x00")
-
-    # Avanzar unas líneas antes de cortar.
     datos.extend(b"\n\n\n")
 
     if cortar_papel:
-        # Corte completo ESC/POS.
         datos.extend(b"\x1d\x56\x00")
 
     return bytes(datos)
 
 
 def imprimir_ticket(texto, nombre_impresora=None):
-    """
-    Envía el ticket directamente a la cola de Windows en modo RAW ESC/POS.
-
-    La impresora debe estar instalada en Windows y ser compatible con
-    comandos ESC/POS para aprovechar el corte automático.
-    """
     win32print = _importar_win32print()
     config = cargar_configuracion()
 
@@ -220,7 +213,7 @@ def imprimir_ticket(texto, nombre_impresora=None):
                 else f"Campo Burger - Ticket copia {numero_copia}"
             )
 
-            job = win32print.StartDocPrinter(
+            win32print.StartDocPrinter(
                 handle,
                 1,
                 (doc_name, None, "RAW"),
