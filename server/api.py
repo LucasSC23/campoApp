@@ -1,3 +1,4 @@
+import uuid
 from contextlib import asynccontextmanager
 from decimal import Decimal
 
@@ -41,7 +42,7 @@ class VentaItem(BaseModel):
 
 
 class CrearVentaRequest(BaseModel):
-    operacion_id: str
+    operacion_id: str | None = None
     total: Decimal
     metodo_pago: str
     items: list[VentaItem]
@@ -233,7 +234,7 @@ def crear_venta(datos: CrearVentaRequest):
             items=items,
             tipo_entrega=datos.tipo_entrega,
             recargo_delivery=datos.recargo_delivery,
-            operacion_id=datos.operacion_id,
+            operacion_id=datos.operacion_id or str(uuid.uuid4()),
         )
 
         return {
