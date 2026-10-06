@@ -1,34 +1,20 @@
 $ErrorActionPreference = "Stop"
 
-
 # ================================================================
 # CAMPO BURGER POS
 # BUILD DEL CLIENTE WINDOWS
 # ================================================================
 
-
-# Carpeta donde vive este script:
-# POS_Hamburgueseria\scripts
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-
-# Carpeta principal del proyecto:
-# POS_Hamburgueseria
 $ProjectDir = Split-Path -Parent $ScriptDir
-
 Set-Location $ProjectDir
-
 
 Write-Host ""
 Write-Host "=== CAMPO BURGER POS - BUILD WINDOWS ===" -ForegroundColor Yellow
 Write-Host ""
 
-
-# ================================================================
-# VALIDACIONES
-# ================================================================
-
-if (-not (Test-Path ".\main.py")) {
-    throw "No se encontro main.py en la raiz del proyecto."
+if (-not (Test-Path ".\client\main.py")) {
+    throw "No se encontro client\main.py."
 }
 
 if (-not (Test-Path ".\CampoBurgerPOS.spec")) {
@@ -39,19 +25,16 @@ if (-not (Test-Path ".\campo_burger.ico")) {
     throw "No se encontro campo_burger.ico."
 }
 
+if (-not (Test-Path ".\requirements-dev.txt")) {
+    throw "No se encontro requirements-dev.txt."
+}
 
-# ================================================================
-# DEPENDENCIAS DE EMPAQUETADO
-# ================================================================
+Write-Host "Verificando dependencias fijadas..." -ForegroundColor Cyan
+python -m pip install -r ".\requirements-dev.txt"
 
-Write-Host "Verificando herramientas de empaquetado..." -ForegroundColor Cyan
-
-python -m pip install --upgrade pyinstaller pywin32
-
-
-# ================================================================
-# LIMPIAR COMPILACIONES ANTERIORES
-# ================================================================
+if ($LASTEXITCODE -ne 0) {
+    throw "No se pudieron instalar/verificar las dependencias de build."
+}
 
 Write-Host ""
 Write-Host "Limpiando compilaciones anteriores..." -ForegroundColor Cyan
@@ -64,68 +47,52 @@ if (Test-Path ".\dist") {
     Remove-Item ".\dist" -Recurse -Force
 }
 
-
-# ================================================================
-# GENERAR CLIENTE
-# ================================================================
-
 Write-Host ""
 Write-Host "Creando CampoBurgerPOS.exe..." -ForegroundColor Cyan
 
-python -m PyInstaller `
-    --noconfirm `
-    --clean `
-    ".\CampoBurgerPOS.spec"
+python -m PyInstaller --noconfirm --clean ".\CampoBurgerPOS.spec"
 
+if ($LASTEXITCODE -ne 0) {
+    throw "PyInstaller devolvio codigo de error $LASTEXITCODE."
+}
 
-# ================================================================
-# VERIFICAR RESULTADO
-# ================================================================
-
-$exe = Join-Path `
-    $ProjectDir `
-    "dist\CampoBurgerPOS\CampoBurgerPOS.exe"
+$distDir = Join-Path $ProjectDir "dist\CampoBurgerPOS"
+$exe = Join-Path $distDir "CampoBurgerPOS.exe"
 
 if (-not (Test-Path $exe)) {
     throw "PyInstaller termino, pero CampoBurgerPOS.exe no fue encontrado."
 }
 
+$archivosEnv = Get-ChildItem -Path $distDir -Recurse -Force -File |
+    Where-Object { $_.Name -eq ".env" -or $_.Name -like ".env.*" }
 
-# ================================================================
-# VERIFICACION DE SEGURIDAD
-# ================================================================
-
-$envCliente = Join-Path `
-    $ProjectDir `
-    "dist\CampoBurgerPOS\.env"
-
-if (Test-Path $envCliente) {
-
+if ($archivosEnv) {
+    $rutas = ($archivosEnv | ForEach-Object { $_.FullName }) -join [Environment]::NewLine
     throw @"
 ERROR DE SEGURIDAD:
 
-Se encontro un archivo .env dentro del cliente compilado.
+Se encontraron archivos .env dentro del cliente compilado:
+
+$rutas
 
 El build fue detenido.
 "@
 }
 
-
-# ================================================================
-# RESULTADO
-# ================================================================
+$servidorEmpaquetado = Join-Path $distDir "server"
+if (Test-Path $servidorEmpaquetado) {
+    throw "ERROR DE SEGURIDAD: se encontro la carpeta server dentro del cliente compilado."
+}
 
 Write-Host ""
 Write-Host "BUILD COMPLETADO CORRECTAMENTE" -ForegroundColor Green
 Write-Host ""
-
 Write-Host "Ejecutable:"
 Write-Host "  $exe"
-
 Write-Host ""
 Write-Host "Seguridad:"
 Write-Host "  .env NO incluido en el cliente." -ForegroundColor Green
-
+Write-Host "  server/ NO incluido como carpeta distribuida." -ForegroundColor Green
 Write-Host ""
 Write-Host "Siguiente paso:"
 Write-Host "  .\scripts\crear_instalador.ps1"
