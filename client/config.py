@@ -11,7 +11,7 @@ APP_DIR = Path(
 
 CONFIG_PATH = APP_DIR / "config.json"
 
-DEFAULT_API_URL = "http://127.0.0.1:8000"
+DEFAULT_API_URL = "https://campo-pos-api.onrender.com"
 
 
 def cargar_configuracion():
