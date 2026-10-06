@@ -1,6 +1,8 @@
 import sys
 import ctypes
 import datetime
+import json
+import uuid
 import os
 import queue
 import threading
@@ -1093,6 +1095,7 @@ class VentanaPrincipal(tk.Tk):
         self._ui_queue = queue.Queue()
         self._cerrando = False
         self._venta_en_proceso = False
+        self._venta_pendiente = None
         self._catalogo_cargando = False
         self._header_en_proceso = False
 
@@ -2280,6 +2283,32 @@ class VentanaPrincipal(tk.Tk):
 
         total = subtotal_productos + recargo
 
+        firma_venta = json.dumps(
+            {
+                "total": str(total),
+                "metodo_pago": metodo_pago,
+                "tipo_entrega": tipo_entrega,
+                "recargo_delivery": str(recargo),
+                "items": items,
+            },
+            sort_keys=True,
+            ensure_ascii=False,
+            default=str,
+            separators=(",", ":"),
+        )
+
+        if (
+            self._venta_pendiente
+            and self._venta_pendiente["firma"] == firma_venta
+        ):
+            operacion_id = self._venta_pendiente["operacion_id"]
+        else:
+            operacion_id = str(uuid.uuid4())
+            self._venta_pendiente = {
+                "operacion_id": operacion_id,
+                "firma": firma_venta,
+            }
+
         self._venta_en_proceso = True
         self.btn_confirmar_venta.config(
             state="disabled",
@@ -2294,6 +2323,7 @@ class VentanaPrincipal(tk.Tk):
                 items=items,
                 tipo_entrega=tipo_entrega,
                 recargo_delivery=recargo,
+                operacion_id=operacion_id,
             ),
             lambda venta_id: self._venta_registrada_ui(
                 venta_id,
@@ -2316,6 +2346,7 @@ class VentanaPrincipal(tk.Tk):
         recargo,
     ):
         self._venta_en_proceso = False
+        self._venta_pendiente = None
         self.btn_confirmar_venta.config(state="normal", text="Confirmar Venta")
         self.config(cursor="")
 
