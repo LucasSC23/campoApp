@@ -32,7 +32,7 @@ class APIClient:
     def __init__(
         self,
         base_url=None,
-        timeout=30,
+        timeout=90,
     ):
         if base_url is None:
             base_url = cargar_configuracion()["api_url"]
@@ -311,11 +311,13 @@ class APIClient:
         items,
         tipo_entrega="Mostrador",
         recargo_delivery=0,
+        operacion_id=None,
     ):
         resultado = self._request(
             "POST",
             "/ventas",
             json={
+                "operacion_id": operacion_id,
                 "total": total,
                 "metodo_pago": metodo_pago,
                 "items": items,
