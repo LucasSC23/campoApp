@@ -4,7 +4,7 @@ from decimal import Decimal
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
-from server.database import DBManager
+from server.database import DBManager, IdempotenciaConflictoError
 
 db = None
 
@@ -41,6 +41,7 @@ class VentaItem(BaseModel):
 
 
 class CrearVentaRequest(BaseModel):
+    operacion_id: str
     total: Decimal
     metodo_pago: str
     items: list[VentaItem]
@@ -232,12 +233,19 @@ def crear_venta(datos: CrearVentaRequest):
             items=items,
             tipo_entrega=datos.tipo_entrega,
             recargo_delivery=datos.recargo_delivery,
+            operacion_id=datos.operacion_id,
         )
 
         return {
             "ok": True,
             "venta_id": venta_id,
         }
+
+    except IdempotenciaConflictoError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=str(exc),
+        ) from exc
 
     except ValueError as exc:
         raise HTTPException(
