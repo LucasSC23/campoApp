@@ -1,60 +1,47 @@
 # Campo POS
 
-Sistema de punto de venta para negocios gastronómicos.
+Sistema de punto de venta de escritorio para Campo Burger & Açaí, orientado a negocios gastronómicos pequeños y medianos.
 
-Campo POS comenzó como un sistema para Campo Burger y está evolucionando hacia una arquitectura comercial reutilizable para hamburgueserías, pizzerías, cafeterías y otros negocios gastronómicos de tamaño pequeño o mediano.
+La versión actual utiliza una arquitectura cliente-servidor: la aplicación Windows no se conecta directamente a PostgreSQL. El cliente consume una API FastAPI desplegada en Render, y el backend accede a PostgreSQL en Supabase.
 
 ---
 
-## Arquitectura
-
-El sistema está dividido en varias capas:
+## Arquitectura actual
 
 ```text
-Usuario / Cajero
-      ↓
-GUI - Tkinter
-      ↓
-api_client.py
-      ↓ HTTP / HTTPS
-FastAPI
-      ↓
-database.py / DBManager
-      ↓
-PostgreSQL / Supabase
+Cajero
+  ↓
+Campo POS Desktop
+Python + Tkinter
+  ↓ HTTPS / JSON
+APIClient
+  ↓
+FastAPI en Render
+  ↓
+DBManager / psycopg2
+  ↓
+Supabase PostgreSQL
 ```
 
 ### Flujo de una venta
 
 ```text
-gui.py
-    ↓
-api_client.py
-    ↓
+client/gui.py
+  ↓
+client/api_client.py
+  ↓
 POST /ventas
-    ↓
-API/api.py
-    ↓
+  ↓
+server/api.py
+  ↓
 CrearVentaRequest
-    ↓
-DBManager.crear_venta()
-    ↓
+  ↓
+server/database.py
+  ↓
 PostgreSQL / Supabase
 ```
 
-La respuesta vuelve en sentido contrario:
-
-```text
-PostgreSQL
-    ↓
-DBManager
-    ↓
-FastAPI
-    ↓
-api_client.py
-    ↓
-GUI
-```
+El cliente genera un `operacion_id` para las ventas. El backend utiliza ese identificador junto con un hash de la operación para evitar ventas duplicadas ante reintentos o respuestas ambiguas.
 
 ---
 
@@ -70,16 +57,16 @@ GUI
 
 ### Backend
 
-- Python
 - FastAPI
 - Uvicorn
 - Pydantic
-
-### Base de datos
-
-- PostgreSQL
-- Supabase
 - Psycopg2
+
+### Infraestructura
+
+- Render — hosting de FastAPI
+- Supabase — PostgreSQL
+- HTTPS entre el cliente y la API
 
 ### Instalación Windows
 
@@ -88,200 +75,180 @@ GUI
 
 ---
 
-## Estructura actual del proyecto
+## Estructura del proyecto
 
 ```text
 POS_Hamburgueseria/
-│
-├── API/
+├── client/
 │   ├── __init__.py
-│   └── api.py
-│
+│   ├── main.py
+│   ├── api_client.py
+│   ├── config.py
+│   ├── gui.py
+│   ├── impresora_termica.py
+│   ├── ui_dialogos.py
+│   ├── ventana_cierre.py
+│   └── ventana_reportes.py
+├── server/
+│   ├── __init__.py
+│   ├── api.py
+│   └── database.py
+├── tests/
+│   ├── __init__.py
+│   └── test_database.py
 ├── installer/
 │   └── CampoBurgerPOS.iss
-│
 ├── scripts/
 │   ├── build_campoburger.ps1
 │   └── crear_instalador.ps1
-│
 ├── sql/
+│   ├── add_ventas_idempotencia.sql
 │   └── reportes.sql
-│
-├── api_client.py
-├── database.py
-├── gui.py
-├── impresora_termica.py
-├── main.py
-├── ui_dialogos.py
-├── ventana_cierre.py
-├── ventana_reportes.py
-│
 ├── CampoBurgerPOS.spec
 ├── campo_burger.ico
-│
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── .env.example
-└── .gitignore
+└── README.md
 ```
 
 ---
 
-## Responsabilidad de los módulos principales
+## Módulos principales
 
-### `main.py`
+### `client/main.py`
 
-Punto de entrada de la aplicación de escritorio.
+Punto de entrada del cliente de escritorio. Crea `APIClient` e inicia `VentanaPrincipal`.
 
-Crea `APIClient` e inicia la interfaz principal.
+### `client/gui.py`
 
----
+Interfaz principal del POS. Gestiona catálogo, carrito, ventas, tickets, historial, caja e interacción con la impresora.
 
-### `gui.py`
+### `client/api_client.py`
 
-Interfaz principal del POS.
+Capa HTTP del cliente. Se comunica con FastAPI y mantiene una interfaz similar al antiguo acceso directo a base de datos.
 
-Gestiona:
+El cliente usa actualmente un timeout de 90 segundos.
 
-- catálogo
-- carrito
-- cobros
-- tickets
-- historial de ventas
-- configuración de impresora
+### `client/config.py`
 
----
+Gestiona la URL de la API. La URL de producción por defecto es:
 
-### `api_client.py`
+```text
+https://campo-pos-api.onrender.com
+```
 
-Cliente HTTP del POS.
+La configuración local puede almacenarse en:
 
-Su responsabilidad es comunicarse con FastAPI.
+```text
+%LOCALAPPDATA%\CampoBurgerPOS\config.json
+```
 
-No accede directamente a PostgreSQL.
+### `server/api.py`
 
----
-
-### `API/api.py`
-
-Backend HTTP del sistema.
-
-Define los endpoints de la API, valida los datos y coordina las operaciones.
+Backend FastAPI. Expone endpoints para productos, caja, ventas y reportes.
 
 Ejemplos:
 
 ```text
-GET  /productos
-POST /ventas
-GET  /caja
-POST /caja/abrir
-POST /caja/cerrar
-GET  /reportes/semanal
+GET   /health
+GET   /productos
+GET   /caja
+GET   /caja/resumen
+POST  /caja/abrir
+POST  /caja/cerrar
+GET   /ventas/sesion-activa
+POST  /ventas
+PATCH /ventas/{venta_id}/metodo-pago
+POST  /ventas/{venta_id}/anular
+GET   /reportes/semanal
+GET   /reportes/mensual
 ```
 
----
+### `server/database.py`
 
-### `database.py`
+Capa de acceso a PostgreSQL. Usa un `ThreadedConnectionPool`, transacciones y validaciones antes de persistir los datos.
 
-Capa de acceso a datos.
+### `client/impresora_termica.py`
 
-Contiene `DBManager`, que administra las conexiones con PostgreSQL y ejecuta las operaciones SQL.
-
----
-
-### `impresora_termica.py`
-
-Gestiona la impresión de tickets mediante las impresoras instaladas en Windows.
+Integración con impresoras instaladas en Windows mediante PyWin32.
 
 ---
 
 ## Configuración
 
-Crear un archivo:
+### Backend
+
+Crear un archivo `.env` a partir de `.env.example`.
+
+Las credenciales PostgreSQL son utilizadas únicamente por el backend y no deben incluirse en el ejecutable Windows.
+
+Variables principales:
 
 ```text
-.env
+DB_HOST
+DB_PORT
+DB_NAME
+DB_USER
+DB_PASSWORD
+DB_SSLMODE
+DB_CONNECT_TIMEOUT
+DB_POOL_MIN
+DB_POOL_MAX
+DB_TIMEZONE
 ```
 
-a partir de:
+Nunca versionar el archivo `.env`.
 
-```text
-.env.example
-```
+### Cliente
 
-Las credenciales de base de datos son utilizadas únicamente por el backend.
+El cliente no necesita credenciales PostgreSQL.
 
-El archivo `.env` no debe versionarse ni incluirse dentro del cliente compilado.
+Solo necesita conocer la URL HTTPS de Campo POS API.
 
 ---
 
-## Instalación de dependencias
+## Desarrollo local
 
-Dependencias de ejecución:
-
-```powershell
-python -m pip install -r requirements.txt
-```
-
-Dependencias de desarrollo:
+Instalar dependencias:
 
 ```powershell
 python -m pip install -r requirements-dev.txt
 ```
 
----
-
-## Ejecutar la API localmente
-
-Desde la raíz del proyecto:
+Ejecutar la API:
 
 ```powershell
-python -m uvicorn API.api:app --reload
+python -m uvicorn server.api:app --reload
 ```
 
-La API estará disponible en:
-
-```text
-http://127.0.0.1:8000
-```
-
-Documentación automática:
-
-```text
-http://127.0.0.1:8000/docs
-```
-
----
-
-## Ejecutar el cliente
-
-Con la API activa:
+Ejecutar el cliente:
 
 ```powershell
-python main.py
+python -m client.main
 ```
+
+Para apuntar temporalmente el cliente a otra API se puede utilizar `CAMPO_API_URL` o actualizar `config.json`.
 
 ---
 
-## Generar el ejecutable Windows
-
-Ejecutar:
+## Build del cliente Windows
 
 ```powershell
 .\scripts\build_campoburger.ps1
 ```
 
-El resultado queda en:
+Resultado:
 
 ```text
 dist\CampoBurgerPOS\CampoBurgerPOS.exe
 ```
 
-El proceso verifica que el archivo `.env` no sea incluido dentro del cliente.
+El proceso de build verifica que archivos `.env` y componentes del servidor no se distribuyan con el cliente.
 
 ---
 
-## Crear el instalador
+## Instalador Windows
 
 Después del build:
 
@@ -289,7 +256,7 @@ Después del build:
 .\scripts\crear_instalador.ps1
 ```
 
-El instalador generado queda en:
+Resultado:
 
 ```text
 installer\CampoBurgerPOS_Setup.exe
@@ -297,71 +264,82 @@ installer\CampoBurgerPOS_Setup.exe
 
 ---
 
-## Seguridad
+## Seguridad y confiabilidad
 
-El objetivo de la arquitectura es que la computadora del cliente no tenga acceso directo a PostgreSQL.
+La arquitectura actual evita distribuir credenciales PostgreSQL en las PCs del negocio.
 
-Arquitectura objetivo:
-
-```text
-PC DEL CLIENTE
-CampoBurgerPOS.exe
-        ↓ HTTPS
-API FastAPI
-        ↓
-PostgreSQL / Supabase
-```
-
-El cliente no debe contener:
+Además se implementó idempotencia para `POST /ventas`:
 
 ```text
-DB_HOST
-DB_USER
-DB_PASSWORD
+operacion_id UUID
++
+operacion_hash
++
+índice UNIQUE
 ```
 
-Las credenciales privadas deben existir únicamente en el servidor backend.
+Esto permite reconocer una misma operación y evita duplicar una venta si existe un reintento.
 
----
+### Pendientes importantes
 
-## Estado actual
+El proyecto todavía tiene mejoras previstas antes de considerarlo completamente endurecido para múltiples clientes o exposición pública a mayor escala:
 
-Actualmente la API se ejecuta localmente durante el desarrollo mediante:
-
-```text
-http://127.0.0.1:8000
-```
-
-El próximo objetivo es desplegar FastAPI en un servidor remoto utilizando HTTPS.
-
----
-
-## Evolución prevista
-
-Entre las siguientes mejoras previstas se encuentran:
-
-- autenticación
-- usuarios
+- autenticación y autorización de usuarios
 - roles y permisos
-- soporte multiempresa
-- soporte multisucursal
-- auditoría
-- arqueo de caja
-- logs
-- backups
-- actualización automática
-- despliegue de FastAPI en producción
+- auditoría de operaciones
+- backend como autoridad completa de precios y totales
+- reintentos automáticos de red
+- persistencia local de operaciones pendientes
+- tests automáticos aislados
+- migraciones formales de base de datos
+- actualización automática del cliente
+- firma digital del instalador
+- monitoreo y alertas
+- soporte multiempresa / multisucursal
 
 ---
 
-## Desarrollo
+## Despliegue actual
 
-El proyecto utiliza Git para control de versiones.
+Backend:
 
-El desarrollo de la reorganización comercial se realiza actualmente en:
+```text
+Render
+https://campo-pos-api.onrender.com
+```
+
+Base de datos:
+
+```text
+Supabase PostgreSQL
+```
+
+Cliente:
+
+```text
+CampoBurgerPOS.exe
+  ↓ HTTPS
+FastAPI / Render
+  ↓
+Supabase PostgreSQL
+```
+
+---
+
+## Rama de desarrollo actual
+
+La arquitectura cliente-servidor y los cambios recientes se encuentran en:
 
 ```text
 refactor/estructura-comercial
 ```
 
-La rama `main` se mantiene como versión estable hasta completar y probar la reorganización.
+Actualmente esta rama contiene la versión más avanzada del proyecto y está por delante de `main`.
+
+Antes de utilizar `main` como referencia para revisión técnica, conviene integrar esta rama cuando se considere estable.
+
+---
+
+## Objetivo
+
+Convertir Campo POS en una solución reutilizable y mantenible para negocios gastronómicos, manteniendo una aplicación de caja rápida en Windows y centralizando lógica, datos y futuras funciones administrativas en el backend.
