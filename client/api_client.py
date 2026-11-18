@@ -1,10 +1,46 @@
+import logging
 import os
+import time
 from datetime import date, datetime
 from decimal import Decimal
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 import requests
 
 from client.config import cargar_configuracion
+
+_API_LOG = logging.getLogger("campo_pos.api")
+_API_LOG.propagate = False
+_API_LOG.setLevel(logging.INFO)
+
+_RUTAS_API = {
+    "/health", "/productos", "/caja", "/caja/abrir", "/caja/cerrar",
+    "/caja/resumen", "/ventas", "/ventas/sesion-activa",
+    "/reportes/sesiones", "/reportes/semanal", "/reportes/mensual",
+}
+_ESTADOS_REINTENTABLES = {408, 502, 503, 504}
+_ESPERAS_REINTENTO = (0.5, 1.0)
+
+
+def _configurar_log_api():
+    local_app_data = os.environ.get("LOCALAPPDATA")
+    if not local_app_data or _API_LOG.handlers:
+        return
+
+    directorio = Path(local_app_data) / "CampoBurgerPOS" / "logs"
+    try:
+        directorio.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(
+            directorio / "api.log", maxBytes=1024 * 1024,
+            backupCount=3, encoding="utf-8",
+        )
+    except OSError:
+        return
+
+    handler.setFormatter(logging.Formatter("%(asctime)s %(message)s"))
+    _API_LOG.addHandler(handler)
+
 
 # ============================================================
 # EXCEPCIONES
@@ -33,12 +69,15 @@ class APIClient:
         self,
         base_url=None,
         timeout=90,
+        *,
+        connect_timeout=5,
     ):
         if base_url is None:
             base_url = cargar_configuracion()["api_url"]
 
         self.base_url = base_url.rstrip("/")
-        self.timeout = timeout
+        self.timeout = (connect_timeout, timeout)
+        _configurar_log_api()
 
 
     # ========================================================
@@ -125,28 +164,53 @@ class APIClient:
                 kwargs["json"]
             )
 
-        try:
-            response = requests.request(
-                method,
-                url,
-                timeout=self.timeout,
-                **kwargs,
-            )
+        reintentar = method == "GET"
+        if method == "POST" and endpoint == "/ventas":
+            operacion_id = kwargs["json"].get("operacion_id")
+            reintentar = isinstance(operacion_id, str) and bool(operacion_id.strip())
+        esperas = _ESPERAS_REINTENTO if reintentar else ()
+        intentos = len(esperas) + 1
+        ruta_log = endpoint if endpoint in _RUTAS_API else "/ventas/{id}"
 
-        except requests.ConnectionError as exc:
-            raise APIError(
-                "No se pudo conectar con el servidor."
-            ) from exc
+        for intento in range(1, intentos + 1):
+            inicio = time.monotonic()
+            try:
+                response = requests.request(
+                    method,
+                    url,
+                    timeout=self.timeout,
+                    **kwargs,
+                )
+            except requests.RequestException as exc:
+                _API_LOG.info(
+                    "%s %s intento=%d/%d error=%s duracion_ms=%.0f",
+                    method, ruta_log, intento, intentos, type(exc).__name__,
+                    (time.monotonic() - inicio) * 1000,
+                )
+                if isinstance(exc, requests.Timeout):
+                    mensaje = "El servidor tardó demasiado en responder."
+                elif isinstance(exc, requests.ConnectionError):
+                    mensaje = "No se pudo conectar con el servidor."
+                else:
+                    mensaje = "Ocurrió un error de comunicación con el servidor."
 
-        except requests.Timeout as exc:
-            raise APIError(
-                "El servidor tardó demasiado en responder."
-            ) from exc
+                transitorio = isinstance(
+                    exc, (requests.Timeout, requests.ConnectionError,
+                          requests.exceptions.ChunkedEncodingError),
+                ) and not isinstance(exc, requests.exceptions.SSLError)
+                if intento == intentos or not transitorio:
+                    raise APIError(mensaje) from exc
+            else:
+                _API_LOG.info(
+                    "%s %s intento=%d/%d estado=%d duracion_ms=%.0f",
+                    method, ruta_log, intento, intentos, response.status_code,
+                    (time.monotonic() - inicio) * 1000,
+                )
+                if intento == intentos or response.status_code not in _ESTADOS_REINTENTABLES:
+                    break
+                response.close()
 
-        except requests.RequestException as exc:
-            raise APIError(
-                "Ocurrió un error de comunicación con el servidor."
-            ) from exc
+            time.sleep(esperas[intento - 1])
 
         try:
             data = response.json()

@@ -1109,20 +1109,19 @@ class VentanaPrincipal(tk.Tk):
         # Estilo global ttk del POS (scrollbars, etc.).
         self._ttk_style = activar_estilo_campo_burger(self)
 
-        self.withdraw()
-        if not self._asegurar_caja_abierta():
-            self.destroy()
-            return
-
-        self.crear_interfaz()
-        self.deiconify()
+        self._abriendo_caja = False
+        self._estado_inicio = tk.Label(
+            self, text="Consultando sesión de caja…", bg=BG, fg=TEXT,
+        )
+        self._estado_inicio.pack(expand=True)
         configurar_barra_titulo_campo_burger(self)
 
-        # Procesa callbacks provenientes de threads en el hilo de Tkinter.
         self.after(40, self._procesar_cola_ui)
-
-        self.cargar_catalogo_async(inicial=True)
-        self.actualizar_header_caja_async()
+        self.run_async(
+            self.db.obtener_sesion_abierta,
+            self._al_consultar_caja,
+            self._error_consulta_caja,
+        )
 
     # ================================================================
     # ASINCRONÍA SEGURA PARA TKINTER
@@ -1166,69 +1165,79 @@ class VentanaPrincipal(tk.Tk):
     # SESIÓN / APERTURA
     # ================================================================
 
-    def _asegurar_caja_abierta(self):
-        try:
-            sesion = self.db.obtener_sesion_abierta()
-
-        except Exception as exc:
-            mostrar_error(
-                self,
-                "Error de base de datos",
-                (
-                    "No se pudo consultar la sesión de caja.\n\n"
-                    f"{exc}"
-                ),
-            )
-            return False
-
+    def _al_consultar_caja(self, sesion):
         if sesion is not None:
-            return True
+            self._iniciar_interfaz()
+        else:
+            self._pedir_apertura_caja()
 
-        while True:
-            monto = pedir_monto(
-                self,
-                "Apertura de caja",
-                (
-                    "No existe una sesión de caja abierta.\n\n"
-                    "Ingresá el fondo inicial disponible "
-                    "en la caja."
-                ),
-                etiqueta="Fondo inicial:",
-                valor_inicial="0",
-                texto_confirmar="Abrir caja",
-            )
+    def _error_consulta_caja(self, mensaje):
+        mostrar_error(
+            self,
+            "Error de base de datos",
+            f"No se pudo consultar la sesión de caja.\n\n{mensaje}",
+        )
+        self.on_close()
 
-            if monto is None:
-                return False
+    def _pedir_apertura_caja(self):
+        self._estado_inicio.config(text="Esperando el fondo inicial…")
+        monto = pedir_monto(
+            self,
+            "Apertura de caja",
+            (
+                "No existe una sesión de caja abierta.\n\n"
+                "Ingresá el fondo inicial disponible en la caja."
+            ),
+            etiqueta="Fondo inicial:",
+            valor_inicial="0",
+            texto_confirmar="Abrir caja",
+        )
+        if monto is None:
+            self.on_close()
+            return
 
+        def abrir():
             try:
-                sesion_id = self.db.abrir_caja(monto)
-
-                mostrar_exito(
-                    self,
-                    "Caja abierta",
-                    (
-                        f"Sesión #{sesion_id} abierta correctamente.\n\n"
-                        f"Fondo inicial: {fmt_gs(monto)}"
-                    ),
-                )
-
-                return True
-
+                return self.db.abrir_caja(monto)
             except ValueError as exc:
-                mostrar_advertencia(
-                    self,
-                    "Monto inválido",
-                    str(exc),
-                )
+                return exc
 
-            except Exception as exc:
-                mostrar_error(
-                    self,
-                    "No se pudo abrir la caja",
-                    str(exc),
-                )
-                return False
+        self._abriendo_caja = True
+        self._estado_inicio.config(text="Abriendo caja…")
+        self.run_async(
+            abrir,
+            lambda resultado: self._al_abrir_caja(resultado, monto),
+            self._error_apertura_caja,
+        )
+
+    def _al_abrir_caja(self, resultado, monto):
+        self._abriendo_caja = False
+        if isinstance(resultado, ValueError):
+            mostrar_advertencia(self, "Monto inválido", str(resultado))
+            self.after_idle(self._pedir_apertura_caja)
+            return
+
+        mostrar_exito(
+            self,
+            "Caja abierta",
+            (
+                f"Sesión #{resultado} abierta correctamente.\n\n"
+                f"Fondo inicial: {fmt_gs(monto)}"
+            ),
+        )
+        self._iniciar_interfaz()
+
+    def _error_apertura_caja(self, mensaje):
+        self._abriendo_caja = False
+        mostrar_error(self, "No se pudo abrir la caja", mensaje)
+        self.on_close()
+
+    def _iniciar_interfaz(self):
+        self._estado_inicio.destroy()
+        self.crear_interfaz()
+        self.cargar_catalogo_async(inicial=True)
+        self.actualizar_header_caja_async()
+
     # ================================================================
     # CATÁLOGO EN MEMORIA
     # ================================================================
@@ -2536,6 +2545,9 @@ class VentanaPrincipal(tk.Tk):
         self.after(150, self.on_close)
 
     def on_close(self):
+        if self._abriendo_caja:
+            return
+
         if self._venta_en_proceso:
             mostrar_advertencia(
                 self,

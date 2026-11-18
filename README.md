@@ -128,7 +128,15 @@ Interfaz principal del POS. Gestiona catálogo, carrito, ventas, tickets, histor
 
 Capa HTTP del cliente. Se comunica con FastAPI y mantiene una interfaz similar al antiguo acceso directo a base de datos.
 
-El cliente usa actualmente un timeout de 90 segundos.
+#### Resiliencia de red
+
+La consulta y la apertura de caja al arrancar, el catálogo, el cierre de caja, los reportes y el historial se ejecutan en segundo plano. Tkinter sigue respondiendo mientras espera la API y muestra el estado de la caja al iniciar.
+
+- Cada intento tiene un timeout de conexión de 5 segundos y uno de lectura de 90 segundos por defecto.
+- Ante fallos transitorios de red o respuestas HTTP 408, 502, 503 o 504, se reintentan las consultas `GET` y el `POST /ventas` si incluye un `operacion_id` válido. Hay hasta dos reintentos, con pausas de 0,5 y 1 segundo. Los intentos de venta reutilizan el mismo identificador y el mismo cuerpo.
+- La apertura y el cierre de caja, la anulación de venta y el cambio de método de pago se envían una sola vez por acción.
+- En Windows, `%LOCALAPPDATA%\CampoBurgerPOS\logs\api.log` guarda el método, la ruta sin identificadores, el número de intento, el resultado y la duración. El archivo rota al alcanzar 1 MiB y conserva hasta tres copias. Los registros excluyen credenciales, URL completas, parámetros y cuerpos.
+
 
 ### `client/config.py`
 
@@ -288,7 +296,6 @@ El proyecto todavía tiene mejoras previstas antes de considerarlo completamente
 - roles y permisos
 - auditoría de operaciones
 - backend como autoridad completa de precios y totales
-- reintentos automáticos de red
 - persistencia local de operaciones pendientes
 - tests automáticos aislados
 - migraciones formales de base de datos
