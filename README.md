@@ -136,6 +136,7 @@ La consulta y la apertura de caja al arrancar, el catálogo, el cierre de caja, 
 - Ante fallos transitorios de red o respuestas HTTP 408, 502, 503 o 504, se reintentan las consultas `GET` y el `POST /ventas` si incluye un `operacion_id` válido. Hay hasta dos reintentos, con pausas de 0,5 y 1 segundo. Los intentos de venta reutilizan el mismo identificador y el mismo cuerpo.
 - La apertura y el cierre de caja, la anulación de venta y el cambio de método de pago se envían una sola vez por acción.
 - En Windows, `%LOCALAPPDATA%\CampoBurgerPOS\logs\api.log` guarda el método, la ruta sin identificadores, el número de intento, el resultado y la duración. El archivo rota al alcanzar 1 MiB y conserva hasta tres copias. Los registros excluyen credenciales, URL completas, parámetros y cuerpos.
+- El último catálogo válido se guarda en `%LOCALAPPDATA%\CampoBurgerPOS\catalogo.json`. Al abrir el POS se muestra esa copia inmediatamente y luego se actualiza desde la API en segundo plano.
 
 
 ### `client/config.py`
@@ -161,6 +162,11 @@ Ejemplos:
 ```text
 GET   /health
 GET   /productos
+POST  /admin/login
+GET   /admin/productos
+POST  /admin/productos
+PATCH /admin/productos/{producto_id}
+PATCH /admin/productos/{producto_id}/estado
 GET   /caja
 GET   /caja/resumen
 POST  /caja/abrir
@@ -287,6 +293,14 @@ operacion_hash
 ```
 
 Esto permite reconocer una misma operación y evita duplicar una venta si existe un reintento.
+
+La administración del menú utiliza un PIN validado exclusivamente por FastAPI. El PIN no se guarda en el cliente: el servidor almacena solamente un hash PBKDF2 configurado mediante `CAMPO_ADMIN_PIN_HASH` y entrega un token temporal después de autenticar. Los productos se activan o desactivan en lugar de eliminarse, preservando el historial de ventas.
+
+Para generar el hash:
+
+```powershell
+python scripts/generar_admin_pin_hash.py
+```
 
 ### Pendientes importantes
 

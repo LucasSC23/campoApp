@@ -5,6 +5,10 @@ grant select, insert, update
 on table public.productos
 to campo_pos;
 
+grant usage, select
+on sequence public.productos_id_seq
+to campo_pos;
+
 drop policy if exists campo_pos_insert_productos
 on public.productos;
 
