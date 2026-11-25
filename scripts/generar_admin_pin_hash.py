@@ -1,7 +1,8 @@
 import base64
-import getpass
 import hashlib
 import secrets
+import tkinter as tk
+from tkinter import simpledialog
 
 
 ITERACIONES = 260_000
@@ -11,19 +12,44 @@ def b64(valor):
     return base64.urlsafe_b64encode(valor).decode("ascii").rstrip("=")
 
 
-def main():
-    pin = getpass.getpass(
-        "PIN administrativo (recomendado: 8 dígitos): "
-    ).strip()
+def solicitar_pin():
+    ventana = tk.Tk()
+    ventana.withdraw()
+    ventana.attributes("-topmost", True)
 
-    if not pin.isdigit() or not 6 <= len(pin) <= 12:
-        raise SystemExit(
-            "El PIN debe contener entre 6 y 12 dígitos."
+    try:
+        pin = simpledialog.askstring(
+            "Campo POS - PIN administrativo",
+            "Elegí un PIN de 6 a 12 dígitos (recomendado: 8):",
+            show="*",
+            parent=ventana,
         )
+        if pin is None:
+            raise SystemExit("Operación cancelada.")
 
-    confirmar = getpass.getpass("Repita el PIN: ").strip()
-    if confirmar != pin:
-        raise SystemExit("Los PIN no coinciden.")
+        pin = pin.strip()
+        if not pin.isascii() or not pin.isdigit() or not 6 <= len(pin) <= 12:
+            raise SystemExit("El PIN debe contener entre 6 y 12 dígitos.")
+
+        confirmar = simpledialog.askstring(
+            "Campo POS - Confirmar PIN",
+            "Volvé a escribir el mismo PIN:",
+            show="*",
+            parent=ventana,
+        )
+        if confirmar is None:
+            raise SystemExit("Operación cancelada.")
+
+        if confirmar.strip() != pin:
+            raise SystemExit("Los PIN no coinciden.")
+
+        return pin
+    finally:
+        ventana.destroy()
+
+
+def main():
+    pin = solicitar_pin()
 
     sal = secrets.token_bytes(16)
     digest = hashlib.pbkdf2_hmac(
