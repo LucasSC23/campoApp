@@ -11,7 +11,9 @@ import tkinter as tk
 from decimal import Decimal, InvalidOperation
 from tkinter import ttk
 
+from client.catalogo_cache import cargar_catalogo_cache, guardar_catalogo_cache
 from client.ventana_cierre import VentanaCierreCaja
+from client.ventana_productos import VentanaAdministrarMenu
 from client.ventana_reportes import VentanaReportes
 from client.ui_dialogos import (
     mostrar_exito,
@@ -1235,6 +1237,12 @@ class VentanaPrincipal(tk.Tk):
     def _iniciar_interfaz(self):
         self._estado_inicio.destroy()
         self.crear_interfaz()
+
+        catalogo_local = cargar_catalogo_cache()
+        if catalogo_local:
+            self.catalogo_productos = list(catalogo_local)
+            self.cargar_menu_productos("TODOS")
+
         self.cargar_catalogo_async(inicial=True)
         self.actualizar_header_caja_async()
 
@@ -1248,12 +1256,14 @@ class VentanaPrincipal(tk.Tk):
 
         self._catalogo_cargando = True
         self.btn_recargar_catalogo.config(state="disabled", text="…")
-        self._mostrar_estado_catalogo("Cargando catálogo...")
+
+        if not self.catalogo_productos:
+            self._mostrar_estado_catalogo("Cargando catálogo...")
 
         self.run_async(
             lambda: self.db.obtener_productos_filtrados("TODOS"),
             lambda productos: self._catalogo_cargado(productos, inicial),
-            self._error_catalogo,
+            lambda mensaje: self._error_catalogo(mensaje, inicial),
         )
 
     def _mostrar_estado_catalogo(self, texto):
@@ -1271,19 +1281,28 @@ class VentanaPrincipal(tk.Tk):
         self.catalogo_productos = list(productos)
         self._catalogo_cargando = False
         self.btn_recargar_catalogo.config(state="normal", text="↻")
+        guardar_catalogo_cache(self.catalogo_productos)
 
         print(f"[CATALOGO] {len(self.catalogo_productos)} productos cargados.")
         self.cargar_menu_productos("TODOS" if inicial else self.categoria_actual)
 
-    def _error_catalogo(self, mensaje):
+    def _error_catalogo(self, mensaje, inicial=False):
         self._catalogo_cargando = False
         self.btn_recargar_catalogo.config(state="normal", text="↻")
-        self._mostrar_estado_catalogo("No se pudo cargar el catálogo.")
+
+        if self.catalogo_productos:
+            self.cargar_menu_productos(self.categoria_actual)
+            print(f"[CATALOGO] API no disponible; usando caché local: {mensaje}")
+            if inicial:
+                return
+        else:
+            self._mostrar_estado_catalogo("No se pudo cargar el catálogo.")
+
         mostrar_error(
             self,
             "Error de catálogo",
             (
-                "No se pudieron cargar los productos desde Supabase.\n\n"
+                "No se pudieron actualizar los productos desde el servidor.\n\n"
                 f"{mensaje}"
             ),
         )
@@ -1404,6 +1423,18 @@ class VentanaPrincipal(tk.Tk):
             acciones,
             text="Reportes",
             command=self.abrir_reportes,
+            bg=PANEL_2,
+            fg=TEXT,
+            relief="flat",
+            font=("Helvetica", 9, "bold"),
+            padx=10,
+            cursor="hand2",
+        ).pack(side="left", padx=4)
+
+        tk.Button(
+            acciones,
+            text="Administrar menú",
+            command=self.abrir_administracion_menu,
             bg=PANEL_2,
             fg=TEXT,
             relief="flat",
@@ -2533,6 +2564,15 @@ class VentanaPrincipal(tk.Tk):
 
     def abrir_reportes(self):
         VentanaReportes(self, self.db)
+
+    def abrir_administracion_menu(self):
+        VentanaAdministrarMenu(
+            self,
+            self.db,
+            on_catalogo_actualizado=lambda: self.cargar_catalogo_async(
+                inicial=False
+            ),
+        )
 
     def abrir_configuracion_impresora(self):
         VentanaConfiguracionImpresora(self)

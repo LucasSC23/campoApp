@@ -2,9 +2,10 @@ import uuid
 from contextlib import asynccontextmanager
 from decimal import Decimal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
+from server.admin_auth import autenticar_admin, requerir_admin
 from server.database import DBManager, IdempotenciaConflictoError
 
 db = None
@@ -48,6 +49,23 @@ class CrearVentaRequest(BaseModel):
     items: list[VentaItem]
     tipo_entrega: str = "Mostrador"
     recargo_delivery: Decimal = Decimal("0")
+
+
+class AdminLoginRequest(BaseModel):
+    pin: str
+
+
+class ProductoAdminRequest(BaseModel):
+    nombre: str
+    precio: Decimal
+    categoria: str
+    subcategoria: str = ""
+    descripcion: str = ""
+    tipo_venta: str = "unidad"
+
+
+class ProductoEstadoRequest(BaseModel):
+    activo: bool
 
 
 # ============================================================
@@ -135,6 +153,116 @@ def obtener_productos(
         raise HTTPException(
             status_code=500,
             detail="No se pudieron obtener los productos.",
+        ) from exc
+
+
+# ============================================================
+# ADMINISTRACIÓN DE MENÚ
+# ============================================================
+
+@app.post("/admin/login")
+def admin_login(
+    datos: AdminLoginRequest,
+    request: Request,
+):
+    return autenticar_admin(datos.pin, request)
+
+
+@app.get("/admin/productos")
+def admin_obtener_productos(
+    _admin: str = Depends(requerir_admin),
+):
+    try:
+        productos = db.obtener_productos_admin()
+        return [
+            {
+                "id": p[0],
+                "nombre": p[1],
+                "precio": p[2],
+                "categoria": p[3],
+                "subcategoria": p[4],
+                "descripcion": p[5],
+                "tipo_venta": p[6],
+                "activo": p[7],
+            }
+            for p in productos
+        ]
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudieron obtener los productos.",
+        ) from exc
+
+
+@app.post("/admin/productos")
+def admin_crear_producto(
+    datos: ProductoAdminRequest,
+    _admin: str = Depends(requerir_admin),
+):
+    try:
+        producto_id = db.agregar_producto(
+            nombre=datos.nombre,
+            precio=datos.precio,
+            categoria=datos.categoria,
+            subcategoria=datos.subcategoria,
+            descripcion=datos.descripcion,
+            tipo_venta=datos.tipo_venta,
+        )
+        return {"ok": True, "producto_id": producto_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo crear el producto.",
+        ) from exc
+
+
+@app.patch("/admin/productos/{producto_id}")
+def admin_actualizar_producto(
+    producto_id: int,
+    datos: ProductoAdminRequest,
+    _admin: str = Depends(requerir_admin),
+):
+    try:
+        db.actualizar_producto(
+            producto_id=producto_id,
+            nombre=datos.nombre,
+            precio=datos.precio,
+            categoria=datos.categoria,
+            subcategoria=datos.subcategoria,
+            descripcion=datos.descripcion,
+            tipo_venta=datos.tipo_venta,
+        )
+        return {"ok": True, "producto_id": producto_id}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo actualizar el producto.",
+        ) from exc
+
+
+@app.patch("/admin/productos/{producto_id}/estado")
+def admin_cambiar_estado_producto(
+    producto_id: int,
+    datos: ProductoEstadoRequest,
+    _admin: str = Depends(requerir_admin),
+):
+    try:
+        db.cambiar_estado_producto(producto_id, datos.activo)
+        return {
+            "ok": True,
+            "producto_id": producto_id,
+            "activo": datos.activo,
+        }
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="No se pudo cambiar el estado del producto.",
         ) from exc
 
 

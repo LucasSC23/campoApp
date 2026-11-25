@@ -18,6 +18,7 @@ _RUTAS_API = {
     "/health", "/productos", "/caja", "/caja/abrir", "/caja/cerrar",
     "/caja/resumen", "/ventas", "/ventas/sesion-activa",
     "/reportes/sesiones", "/reportes/semanal", "/reportes/mensual",
+    "/admin/login", "/admin/productos",
 }
 _ESTADOS_REINTENTABLES = {408, 502, 503, 504}
 _ESPERAS_REINTENTO = (0.5, 1.0)
@@ -77,6 +78,7 @@ class APIClient:
 
         self.base_url = base_url.rstrip("/")
         self.timeout = (connect_timeout, timeout)
+        self.admin_token = None
         _configurar_log_api()
 
 
@@ -170,7 +172,12 @@ class APIClient:
             reintentar = isinstance(operacion_id, str) and bool(operacion_id.strip())
         esperas = _ESPERAS_REINTENTO if reintentar else ()
         intentos = len(esperas) + 1
-        ruta_log = endpoint if endpoint in _RUTAS_API else "/ventas/{id}"
+        if endpoint.startswith("/admin/productos/"):
+            ruta_log = "/admin/productos/{id}"
+        elif endpoint.startswith("/ventas/"):
+            ruta_log = "/ventas/{id}"
+        else:
+            ruta_log = endpoint if endpoint in _RUTAS_API else "/otro"
 
         for intento in range(1, intentos + 1):
             inicio = time.monotonic()
@@ -218,6 +225,9 @@ class APIClient:
             data = None
 
         if not response.ok:
+
+            if response.status_code == 401 and endpoint.startswith("/admin"):
+                self.admin_token = None
 
             if isinstance(data, dict):
                 mensaje = data.get(
@@ -299,6 +309,59 @@ class APIClient:
             )
             for producto in productos
         ]
+
+
+    def autenticar_admin(self, pin):
+        resultado = self._request(
+            "POST",
+            "/admin/login",
+            json={"pin": str(pin)},
+        )
+        self.admin_token = resultado["access_token"]
+        return resultado
+
+
+    def _headers_admin(self):
+        if not self.admin_token:
+            raise APIError("La sesión administrativa no está iniciada.")
+        return {
+            "Authorization": f"Bearer {self.admin_token}",
+        }
+
+
+    def obtener_productos_admin(self):
+        return self._request(
+            "GET",
+            "/admin/productos",
+            headers=self._headers_admin(),
+        )
+
+
+    def agregar_producto_admin(self, datos):
+        return self._request(
+            "POST",
+            "/admin/productos",
+            headers=self._headers_admin(),
+            json=datos,
+        )
+
+
+    def actualizar_producto_admin(self, producto_id, datos):
+        return self._request(
+            "PATCH",
+            f"/admin/productos/{int(producto_id)}",
+            headers=self._headers_admin(),
+            json=datos,
+        )
+
+
+    def cambiar_estado_producto_admin(self, producto_id, activo):
+        return self._request(
+            "PATCH",
+            f"/admin/productos/{int(producto_id)}/estado",
+            headers=self._headers_admin(),
+            json={"activo": bool(activo)},
+        )
 
 
     # ========================================================

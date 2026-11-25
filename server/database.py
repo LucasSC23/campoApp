@@ -58,6 +58,7 @@ class DBManager:
             "subcategoria",
             "descripcion",
             "tipo_venta",
+            "activo",
         },
         "sesiones_caja": {
             "id",
@@ -447,6 +448,7 @@ class DBManager:
                 tipo_venta
             FROM productos
             WHERE 1 = 1
+              AND activo = TRUE
         """
 
         params = []
@@ -486,6 +488,49 @@ class DBManager:
                 )
 
                 return cur.fetchall()
+
+
+    def obtener_productos_admin(self):
+        """Lista productos activos e inactivos para el panel administrativo."""
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        nombre,
+                        precio,
+                        categoria,
+                        subcategoria,
+                        descripcion,
+                        tipo_venta,
+                        activo
+                    FROM productos
+                    ORDER BY
+                        categoria,
+                        subcategoria NULLS LAST,
+                        nombre;
+                    """
+                )
+                return cur.fetchall()
+
+
+    def cambiar_estado_producto(self, producto_id, activo):
+        with self._connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    UPDATE productos
+                    SET activo = %s
+                    WHERE id = %s;
+                    """,
+                    (bool(activo), producto_id),
+                )
+
+                if cur.rowcount != 1:
+                    raise ValueError(
+                        f"No existe el producto #{producto_id}."
+                    )
 
 
     def obtener_producto_por_id(
