@@ -296,6 +296,15 @@ Esto permite reconocer una misma operación y evita duplicar una venta si existe
 
 La administración del menú utiliza un PIN validado exclusivamente por FastAPI. El PIN no se guarda en el cliente: el servidor almacena solamente un hash PBKDF2 configurado mediante `CAMPO_ADMIN_PIN_HASH` y entrega un token temporal después de autenticar. Los productos se activan o desactivan en lugar de eliminarse, preservando el historial de ventas.
 
+El mismo PIN protege en el cliente las operaciones sensibles de **cerrar caja**, **anular una venta** y **cambiar el método de pago**. El backend puede exigir también ese token en esas rutas. Para evitar romper instalaciones antiguas durante una actualización, esa exigencia se activa de forma explícita con `CAMPO_PROTEGER_OPERACIONES_SENSIBLES=true`.
+
+Orden recomendado de despliegue:
+
+1. generar y configurar `CAMPO_ADMIN_PIN_HASH` en el servidor;
+2. desplegar el backend manteniendo `CAMPO_PROTEGER_OPERACIONES_SENSIBLES=false`;
+3. instalar el nuevo cliente en la PC del negocio y probar el PIN;
+4. recién entonces cambiar `CAMPO_PROTEGER_OPERACIONES_SENSIBLES=true` en Render.
+
 Para generar el hash:
 
 ```powershell

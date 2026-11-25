@@ -629,8 +629,21 @@ class VentanaHistorialVentas(tk.Toplevel):
                 ).pack(fill="x")
 
     def cambiar_metodo(self, venta_id, nuevo_metodo):
+        self.parent.solicitar_autorizacion_admin(
+            self,
+            lambda: self._cambiar_metodo_autorizado(
+                venta_id,
+                nuevo_metodo,
+            ),
+            al_cancelar=self.cargar_datos,
+        )
+
+    def _cambiar_metodo_autorizado(self, venta_id, nuevo_metodo):
         self.parent.run_async(
-            lambda: self.db.actualizar_metodo_pago_venta(venta_id, nuevo_metodo),
+            lambda: self.db.actualizar_metodo_pago_venta(
+                venta_id,
+                nuevo_metodo,
+            ),
             lambda _resultado: self._despues_de_modificar(),
             lambda mensaje: mostrar_error(
                 self,
@@ -654,6 +667,12 @@ class VentanaHistorialVentas(tk.Toplevel):
         ):
             return
 
+        self.parent.solicitar_autorizacion_admin(
+            self,
+            lambda: self._anular_autorizado(venta_id),
+        )
+
+    def _anular_autorizado(self, venta_id):
         self._mostrar_cargando("Anulando venta...")
         self.parent.run_async(
             lambda: self.db.anular_venta(venta_id),
@@ -2554,6 +2573,52 @@ class VentanaPrincipal(tk.Tk):
         dialog.bind("<Escape>", lambda _e: cerrar_dialogo())
         dialog.wait_window()
         return resultado["valor"]
+
+    # ================================================================
+    # AUTORIZACIÓN ADMINISTRATIVA
+    # ================================================================
+
+    def solicitar_autorizacion_admin(
+        self,
+        parent,
+        al_autorizar,
+        al_cancelar=None,
+    ):
+        pin = pedir_texto(
+            parent,
+            "Autorización administrativa",
+            (
+                "Esta operación modifica información sensible.\n\n"
+                "Ingrese el PIN administrativo para continuar."
+            ),
+            etiqueta="PIN administrativo:",
+            texto_confirmar="Autorizar",
+            solo_digitos=True,
+            ocultar=True,
+        )
+
+        if pin is None:
+            if al_cancelar is not None:
+                al_cancelar()
+            return
+
+        def autorizado(_resultado):
+            al_autorizar()
+
+        def error(mensaje):
+            mostrar_error(
+                parent,
+                "Acceso denegado",
+                mensaje,
+            )
+            if al_cancelar is not None:
+                al_cancelar()
+
+        self.run_async(
+            lambda: self.db.autenticar_admin(pin),
+            autorizado,
+            error,
+        )
 
     # ================================================================
     # OTRAS VENTANAS

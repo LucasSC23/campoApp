@@ -408,6 +408,7 @@ class APIClient:
         resultado = self._request(
             "POST",
             "/caja/cerrar",
+            headers=self._headers_admin(),
         )
 
         return resultado["sesion_id"]
@@ -493,6 +494,7 @@ class APIClient:
         self._request(
             "PATCH",
             f"/ventas/{ticket_id}/metodo-pago",
+            headers=self._headers_admin(),
             json={
                 "metodo_pago": nuevo_metodo,
             },
@@ -505,6 +507,7 @@ class APIClient:
         self._request(
             "POST",
             f"/ventas/{ticket_id}/anular",
+            headers=self._headers_admin(),
         )
 
         return True

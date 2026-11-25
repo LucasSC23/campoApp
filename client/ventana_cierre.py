@@ -690,6 +690,15 @@ class VentanaCierreCaja(tk.Toplevel):
         if not confirmado:
             return
 
+        self.parent.solicitar_autorizacion_admin(
+            self,
+            self._iniciar_cierre_autorizado,
+        )
+
+    def _iniciar_cierre_autorizado(self):
+        if self._cerrando:
+            return
+
         self._cerrando = True
 
         self.btn_cerrar.config(

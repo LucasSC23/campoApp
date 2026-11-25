@@ -149,3 +149,23 @@ def requerir_admin(
         _tokens[token] = ahora + _TOKEN_TTL
 
     return token
+
+
+def operaciones_sensibles_protegidas():
+    valor = str(
+        os.getenv("CAMPO_PROTEGER_OPERACIONES_SENSIBLES", "false")
+    ).strip().lower()
+    return valor in {"1", "true", "yes", "si", "sí", "on"}
+
+
+def requerir_admin_sensible(
+    authorization: str | None = Header(default=None),
+):
+    """
+    Protege operaciones sensibles sin romper clientes antiguos durante
+    el despliegue. Se activa con CAMPO_PROTEGER_OPERACIONES_SENSIBLES=true.
+    """
+    if not operaciones_sensibles_protegidas():
+        return None
+
+    return requerir_admin(authorization)

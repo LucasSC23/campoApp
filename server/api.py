@@ -5,7 +5,11 @@ from decimal import Decimal
 from fastapi import Depends, FastAPI, HTTPException, Request
 from pydantic import BaseModel
 
-from server.admin_auth import autenticar_admin, requerir_admin
+from server.admin_auth import (
+    autenticar_admin,
+    requerir_admin,
+    requerir_admin_sensible,
+)
 from server.database import DBManager, IdempotenciaConflictoError
 
 db = None
@@ -314,7 +318,9 @@ def abrir_caja(datos: AbrirCajaRequest):
 
 
 @app.post("/caja/cerrar")
-def cerrar_caja():
+def cerrar_caja(
+    _admin: str | None = Depends(requerir_admin_sensible),
+):
     try:
         sesion_id = db.cerrar_caja()
 
@@ -393,6 +399,7 @@ def crear_venta(datos: CrearVentaRequest):
 def actualizar_metodo_pago(
     venta_id: int,
     datos: CambiarMetodoPagoRequest,
+    _admin: str | None = Depends(requerir_admin_sensible),
 ):
     try:
         db.actualizar_metodo_pago_venta(
@@ -414,7 +421,10 @@ def actualizar_metodo_pago(
 
 
 @app.post("/ventas/{venta_id}/anular")
-def anular_venta(venta_id: int):
+def anular_venta(
+    venta_id: int,
+    _admin: str | None = Depends(requerir_admin_sensible),
+):
     try:
         db.anular_venta(
             venta_id

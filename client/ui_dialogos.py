@@ -706,6 +706,7 @@ def pedir_texto(
     texto_confirmar="Aceptar",
     permitir_vacio=False,
     solo_digitos=False,
+    ocultar=False,
 ):
     """
     Solicita texto al usuario.
@@ -783,6 +784,7 @@ def pedir_texto(
         insertbackground=TEXT,
         relief="flat",
         bd=0,
+        show="•" if ocultar else "",
         **kwargs_entry,
     )
 
